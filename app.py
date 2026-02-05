@@ -2,41 +2,53 @@ import requests
 import pandas as pd
 import streamlit as st
 from datetime import datetime
+import json
+from bs4 import BeautifulSoup
 
 # ======================
 # CONFIG
 # ======================
-API_URL = "https://galeri24.co.id/api/emas/harga"
+URL = "https://galeri24.co.id/harga-emas"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept": "application/json"
+    "User-Agent": "Mozilla/5.0"
 }
 
 # ======================
-# SCRAPER VIA API
+# SCRAPER NEXT.JS
 # ======================
 def scrape_galeri24():
-    r = requests.get(API_URL, headers=HEADERS, timeout=20)
+    r = requests.get(URL, headers=HEADERS, timeout=20)
     r.raise_for_status()
 
-    json_data = r.json()
+    soup = BeautifulSoup(r.text, "html.parser")
 
-    if not json_data or "data" not in json_data:
-        raise ValueError("Format API tidak sesuai")
+    next_data = soup.find("script", id="__NEXT_DATA__")
+    if not next_data:
+        raise ValueError("__NEXT_DATA__ tidak ditemukan")
+
+    json_data = json.loads(next_data.string)
+
+    # 🔍 struktur data Galeri24 (Next.js props)
+    try:
+        products = (
+            json_data["props"]["pageProps"]["data"]["products"]
+        )
+    except KeyError:
+        raise ValueError("Struktur data Next.js berubah")
 
     records = []
-    for item in json_data["data"]:
+    for item in products:
         records.append({
             "tanggal": datetime.now().strftime("%Y-%m-%d"),
             "produk": "Galeri 24",
             "berat": item.get("weight"),
             "harga_jual": int(item.get("sell_price", 0)),
-            "harga_buyback": int(item.get("buyback_price", 0))
+            "harga_buyback": int(item.get("buyback_price", 0)),
         })
 
     if not records:
-        raise ValueError("Data kosong dari API")
+        raise ValueError("Data harga kosong")
 
     return pd.DataFrame(records)
 
@@ -45,7 +57,7 @@ def scrape_galeri24():
 # ======================
 st.set_page_config(page_title="Harga Emas Galeri 24", layout="wide")
 st.title("📊 Harga Emas Galeri 24 (Live)")
-st.caption("Sumber: galeri24.co.id – data via API internal")
+st.caption("Sumber: galeri24.co.id – data dari __NEXT_DATA__ (Next.js)")
 
 try:
     df = scrape_galeri24()
