@@ -59,4 +59,8 @@ try:
     col1.metric("Jumlah Varian", len(df))
 
     harga_1g = df[df["berat"] == "1"]["harga_jual"].iloc[0]
-    col2.metric("Harga Jual 1
+    col2.metric("Harga Jual 1 gr", f"Rp {harga_1g:,}")
+
+except Exception as e:
+    st.error("❌ Terjadi error saat scraping")
+    st.exception(e)
