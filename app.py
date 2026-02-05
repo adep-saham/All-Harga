@@ -2,40 +2,60 @@ import requests
 import pandas as pd
 import streamlit as st
 from datetime import datetime
+import re
 import json
-from bs4 import BeautifulSoup
 
 # ======================
 # CONFIG
 # ======================
-URL = "https://galeri24.co.id/harga-emas"
+PAGE_URL = "https://galeri24.co.id/harga-emas"
+BASE_URL = "https://galeri24.co.id"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0"
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
 }
 
 # ======================
-# SCRAPER NEXT.JS
+# STEP 1: GET BUILD ID
 # ======================
-def scrape_galeri24():
-    r = requests.get(URL, headers=HEADERS, timeout=20)
+def get_build_id(html: str) -> str:
+    match = re.search(r'"buildId":"([^"]+)"', html)
+    if not match:
+        raise ValueError("buildId Next.js tidak ditemukan")
+    return match.group(1)
+
+# ======================
+# STEP 2: FETCH NEXT DATA JSON
+# ======================
+def fetch_next_data(build_id: str) -> dict:
+    json_url = f"{BASE_URL}/_next/data/{build_id}/harga-emas.json"
+
+    r = requests.get(json_url, headers=HEADERS, timeout=20)
     r.raise_for_status()
 
-    soup = BeautifulSoup(r.text, "html.parser")
+    return r.json()
 
-    next_data = soup.find("script", id="__NEXT_DATA__")
-    if not next_data:
-        raise ValueError("__NEXT_DATA__ tidak ditemukan")
+# ======================
+# STEP 3: PARSE DATA
+# ======================
+def scrape_galeri24():
+    # ambil HTML awal
+    r = requests.get(PAGE_URL, headers=HEADERS, timeout=20)
+    r.raise_for_status()
 
-    json_data = json.loads(next_data.string)
+    build_id = get_build_id(r.text)
 
-    # 🔍 struktur data Galeri24 (Next.js props)
+    next_data = fetch_next_data(build_id)
+
     try:
-        products = (
-            json_data["props"]["pageProps"]["data"]["products"]
-        )
+        products = next_data["pageProps"]["data"]["products"]
     except KeyError:
-        raise ValueError("Struktur data Next.js berubah")
+        raise ValueError("Struktur JSON Galeri24 berubah")
 
     records = []
     for item in products:
@@ -57,7 +77,7 @@ def scrape_galeri24():
 # ======================
 st.set_page_config(page_title="Harga Emas Galeri 24", layout="wide")
 st.title("📊 Harga Emas Galeri 24 (Live)")
-st.caption("Sumber: galeri24.co.id – data dari __NEXT_DATA__ (Next.js)")
+st.caption("Sumber: galeri24.co.id – Next.js pre-render JSON")
 
 try:
     df = scrape_galeri24()
