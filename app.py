@@ -1,69 +1,59 @@
 import requests
-from bs4 import BeautifulSoup
 import pandas as pd
+import streamlit as st
 from datetime import datetime
 import re
-import streamlit as st
+import json
 
-# ======================
-# CONFIG
-# ======================
 URL = "https://galeri24.co.id/harga-emas"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    "User-Agent": "Mozilla/5.0"
 }
 
-# ======================
-# UTIL
-# ======================
-def clean_price(text):
-    if not text:
-        return None
-    return int(re.sub(r"[^\d]", "", text))
+def extract_prices_from_script(html: str):
+    """
+    Galeri24 inject data harga via JavaScript.
+    Kita tarik JSON-nya dari <script>.
+    """
 
-# ======================
-# SCRAPER
-# ======================
-def scrape_galeri24():
-    res = requests.get(URL, headers=HEADERS, timeout=20)
-    res.raise_for_status()
+    # cari pola array harga
+    pattern = re.compile(r"var\s+hargaEmas\s*=\s*(\[.*?\]);", re.S)
+    match = pattern.search(html)
 
-    soup = BeautifulSoup(res.text, "html.parser")
+    if not match:
+        raise ValueError("Data harga tidak ditemukan di script")
 
-    table = soup.find("table")
-    if not table:
-        raise ValueError("❌ Tabel harga emas tidak ditemukan")
+    raw_json = match.group(1)
 
-    # tidak pakai <tbody> (AMAN)
-    rows = table.find_all("tr")[1:]  # skip header
+    # parse JSON
+    data = json.loads(raw_json)
 
-    data = []
-    for row in rows:
-        cols = [c.get_text(strip=True) for c in row.find_all("td")]
-        if len(cols) < 3:
-            continue
-
-        data.append({
+    records = []
+    for item in data:
+        records.append({
             "tanggal": datetime.now().strftime("%Y-%m-%d"),
             "produk": "Galeri 24",
-            "berat": cols[0],
-            "harga_jual": clean_price(cols[1]),
-            "harga_buyback": clean_price(cols[2])
+            "berat": item.get("berat"),
+            "harga_jual": int(item.get("hargaJual", 0)),
+            "harga_buyback": int(item.get("hargaBuyback", 0))
         })
 
-    if not data:
-        raise ValueError("❌ Data kosong – kemungkinan struktur web berubah")
+    return pd.DataFrame(records)
 
-    return pd.DataFrame(data)
+def scrape_galeri24():
+    r = requests.get(URL, headers=HEADERS, timeout=20)
+    r.raise_for_status()
+
+    html = r.text
+    return extract_prices_from_script(html)
 
 # ======================
 # STREAMLIT UI
 # ======================
 st.set_page_config(page_title="Harga Emas Galeri 24", layout="wide")
 st.title("📊 Harga Emas Galeri 24 (Live)")
-
-st.caption("Sumber: galeri24.co.id – hanya ditampilkan, belum disimpan")
+st.caption("Sumber: galeri24.co.id – data diambil dari script JS")
 
 try:
     df = scrape_galeri24()
@@ -71,14 +61,12 @@ try:
     st.success("✅ Data berhasil diambil")
     st.dataframe(df, use_container_width=True)
 
-    # ringkasan cepat
     st.subheader("🔎 Ringkasan")
     col1, col2 = st.columns(2)
     col1.metric("Jumlah Varian", len(df))
-    col2.metric(
-        "Harga Jual 1 gr",
-        f"Rp {df[df['berat'].str.contains('1')]['harga_jual'].iloc[0]:,}"
-    )
+
+    harga_1g = df[df["berat"].astype(str).str.contains("1")]["harga_jual"].iloc[0]
+    col2.metric("Harga Jual 1 gr", f"Rp {harga_1g:,}")
 
 except Exception as e:
     st.error("❌ Terjadi error saat scraping")
