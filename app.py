@@ -7,12 +7,16 @@ from bs4 import BeautifulSoup
 
 URL = "https://galeri24.co.id/harga-emas"
 
-# ===== UI CONFIG =====
+# =========================
+# UI CONFIG
+# =========================
 st.set_page_config(page_title="Harga Emas Galeri24", layout="wide")
 st.title("Harga Emas Galeri24")
 st.caption(URL)
 
-# ===== HELPERS =====
+# =========================
+# HELPERS
+# =========================
 def rupiah_to_int(s: str) -> int:
     """Convert 'Rp1.546.000' -> 1546000"""
     if s is None:
@@ -29,10 +33,8 @@ def format_rp(x: int) -> str:
 
 def parse_update_label(text: str) -> str:
     """
-    Try to extract 'Diperbarui Selasa, 3 Februari 2026'
-    If not found, fallback to today.
+    Try to extract line like: 'Diperbarui Selasa, 3 Februari 2026'
     """
-    # Capture entire "Diperbarui ...." line if exists
     m = re.search(r"(Diperbarui\s+[A-Za-z]+\s*,\s*\d{1,2}\s+[A-Za-z]+\s+\d{4})", text)
     if m:
         return m.group(1).strip()
@@ -49,6 +51,7 @@ def parse_update_date(text: str) -> str:
     day = int(m.group(1))
     mon_name = m.group(2).lower()
     year = int(m.group(3))
+
     months = {
         "januari": 1, "februari": 2, "maret": 3, "april": 4, "mei": 5, "juni": 6,
         "juli": 7, "agustus": 8, "september": 9, "oktober": 10, "november": 11, "desember": 12
@@ -56,37 +59,30 @@ def parse_update_date(text: str) -> str:
     month = months.get(mon_name)
     if not month:
         return datetime.now().strftime("%Y-%m-%d")
+
     return f"{year:04d}-{month:02d}-{day:02d}"
 
 def normalize_vendor(v: str):
     if not v:
         return None
     v = v.strip()
-    # remove accidental tokens
     blacklist = {"BUYBACK", "HARGA", "BERAT", "HARGA BUYBACK", "HARGA JUAL"}
-    if v.strip().upper() in blacklist:
+    if v.upper() in blacklist:
         return None
-    # keep original capitalization style like website (mostly uppercase in sidebar)
-    return v.strip().upper()
+    return v.upper()
 
-# Urutan berat yang umum dipakai di tabel Galeri24
+# Urutan berat yang tampil umum di Galeri24
 WEIGHT_ORDER = [0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000]
 WEIGHT_RANK = {w: i for i, w in enumerate(WEIGHT_ORDER)}
 
 def weight_sort_key(w: float):
-    # weights in WEIGHT_ORDER come first in exact order, others after sorted ascending
     if w in WEIGHT_RANK:
         return (0, WEIGHT_RANK[w])
     return (1, w)
 
-def is_weight_token(x: str) -> bool:
-    x = x.replace(",", ".").strip()
-    return bool(re.fullmatch(r"\d+(\.\d+)?", x))
-
-def is_rp_token(x: str) -> bool:
-    return "Rp" in x
-
-# ===== FETCH & SCRAPE =====
+# =========================
+# FETCH
+# =========================
 @st.cache_data(ttl=300)
 def fetch_html() -> str:
     headers = {
@@ -100,16 +96,33 @@ def fetch_html() -> str:
     r.raise_for_status()
     return r.text
 
+# =========================
+# SCRAPER (TOLERANT)
+# =========================
 def scrape_prices(html: str) -> pd.DataFrame:
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text("\n", strip=True)
-    update_date = parse_update_date(text)
 
+    update_date = parse_update_date(text)
     lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+
+    def is_weight_token(x: str) -> bool:
+        x = x.replace(",", ".").strip()
+        return bool(re.fullmatch(r"\d+(\.\d+)?", x))
+
+    def parse_weight(x: str):
+        try:
+            return float(x.replace(",", "."))
+        except Exception:
+            return None
+
+    def is_rp_token(x: str) -> bool:
+        return "Rp" in x
 
     rows = []
     vendor = None
     i = 0
+    LOOKAHEAD = 12  # tolerant scan window after weight
 
     while i < len(lines):
         ln = lines[i]
@@ -121,28 +134,35 @@ def scrape_prices(html: str) -> pd.DataFrame:
             i += 1
             continue
 
-        # Skip header tokens
+        # Skip common header labels
         if ln.lower() in {"berat", "harga jual", "harga buyback"}:
             i += 1
             continue
 
-        # Parse triplet: weight, Rp sell, Rp buyback
         if vendor and is_weight_token(ln):
-            w = float(ln.replace(",", "."))
-            j = i + 1
+            w = parse_weight(ln)
+            if w is None:
+                i += 1
+                continue
+
+            # VALIDASI: buang noise seperti 0.001
+            if not (0.5 <= w <= 1000):
+                i += 1
+                continue
+
             rp_vals = []
-            while j < len(lines) and len(rp_vals) < 2:
-                # stop if next vendor encountered
+            for j in range(i + 1, min(len(lines), i + 1 + LOOKAHEAD)):
                 if lines[j].startswith("Harga "):
                     break
                 if is_rp_token(lines[j]):
                     rp_vals.append(lines[j])
-                j += 1
+                    if len(rp_vals) == 2:
+                        break
 
             if len(rp_vals) == 2:
                 sell = rupiah_to_int(rp_vals[0])
                 buyback = rupiah_to_int(rp_vals[1])
-                # guard: sometimes parser catches unrelated Rp; ensure not zero-ish too often
+
                 rows.append({
                     "date": update_date,
                     "vendor": vendor,
@@ -151,63 +171,60 @@ def scrape_prices(html: str) -> pd.DataFrame:
                     "buyback_idr": buyback,
                     "source": URL
                 })
-                i = j
+                i += 1
                 continue
 
         i += 1
 
     if not rows:
-        raise RuntimeError("Tidak menemukan data harga. HTML yang didapat kemungkinan bukan konten harga.")
+        preview = "\n".join(lines[:80])
+        raise RuntimeError(
+            "Tidak menemukan data harga walaupun HTML terunduh.\n"
+            "Preview awal:\n" + preview
+        )
 
     df = pd.DataFrame(rows).drop_duplicates(
         subset=["date", "vendor", "weight_g", "sell_idr", "buyback_idr"]
     )
-
-    # clean vendor None
     df = df[df["vendor"].notna()]
 
-    # sort per vendor + weight order
+    # sort by vendor then weight in exact order
     df["__wkey0"] = df["weight_g"].apply(lambda x: weight_sort_key(float(x))[0])
     df["__wkey1"] = df["weight_g"].apply(lambda x: weight_sort_key(float(x))[1])
     df = df.sort_values(["vendor", "__wkey0", "__wkey1"]).drop(columns=["__wkey0", "__wkey1"])
 
     return df
 
-# ===== UI =====
-col_left, col_right = st.columns([1, 1])
-
-with col_left:
-    run = st.button("Ambil data sekarang")
-
-with col_right:
-    st.write("")
+# =========================
+# UI
+# =========================
+run = st.button("Ambil data sekarang")
 
 if run:
     try:
         html = fetch_html()
+        soup = BeautifulSoup(html, "html.parser")
+        page_text = soup.get_text("\n", strip=True)
 
-        # Debug kecil (boleh kamu hide nanti)
-        st.caption(f"Panjang HTML: {len(html)} | Ada kata 'Harga ANTAM'?: {'Harga ANTAM' in html}")
+        # debug kecil
+        st.caption(f"Panjang HTML: {len(html)} | Ada 'Harga ANTAM'?: {'Harga ANTAM' in html}")
 
         df = scrape_prices(html)
 
-        # Update label mirip website
-        update_label = parse_update_label(BeautifulSoup(html, "html.parser").get_text("\n", strip=True))
-        st.subheader(update_label)
+        # Judul update mirip website
+        st.subheader(parse_update_label(page_text))
 
         vendors = sorted(df["vendor"].unique().tolist())
-
         st.sidebar.header("Vendor Emas")
         selected = st.sidebar.multiselect("Pilih Vendor", options=vendors, default=vendors)
 
         st.success(f"Berhasil: {len(df)} baris")
 
-        # Render per vendor seperti website
+        # Render per vendor seperti website (judul + tabel)
         for v in selected:
             st.markdown(f"## Harga {v}")
 
             sub = df[df["vendor"] == v].copy()
-            # ensure weight order exact
             sub["__wkey0"] = sub["weight_g"].apply(lambda x: weight_sort_key(float(x))[0])
             sub["__wkey1"] = sub["weight_g"].apply(lambda x: weight_sort_key(float(x))[1])
             sub = sub.sort_values(["__wkey0", "__wkey1"]).drop(columns=["__wkey0", "__wkey1"])
@@ -220,7 +237,7 @@ if run:
 
             st.table(display_df)
 
-        # Download CSV
+        # Download raw data (long format)
         csv = df.to_csv(index=False).encode("utf-8-sig")
         st.download_button("Download CSV (raw long)", csv, "galeri24_harga_emas_long.csv", "text/csv")
 
