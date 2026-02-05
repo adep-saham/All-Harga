@@ -4,92 +4,49 @@ import streamlit as st
 from datetime import datetime
 
 # ======================
-# STREAMLIT CONFIG
+# CONFIG
 # ======================
-st.set_page_config(page_title="Harga Emas Galeri 24 (XHR)", layout="wide")
-st.title("📊 Harga Emas Galeri 24 (XHR API)")
-st.caption("Sumber: galeri24.co.id – data dari Network (Fetch/XHR)")
-
-st.markdown("""
-**Cara pakai:**
-1. Buka `galeri24.co.id/harga-emas`
-2. DevTools → Network → Fetch/XHR
-3. Klik request `page-data` / `product-variants`
-4. Copy **Request URL**
-5. Paste di bawah
-""")
-
-# ======================
-# INPUT URL
-# ======================
-api_url = st.text_input(
-    "Paste Request URL (XHR) dari Network tab",
-    placeholder="https://galeri24.co.id/...."
+API_URL = (
+    "https://galeri24.co.id/api/product-variants"
+    "?take=100"
+    "&vendor_id=d0fd1d95-ac0a-48d8-95f8-98bd9c5f9197"
 )
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        "Chrome/144.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json",
-    "X-Requested-With": "XMLHttpRequest"
 }
 
 # ======================
-# FETCH DATA
+# SCRAPER
 # ======================
-def fetch_xhr_data(url: str):
-    r = requests.get(url, headers=HEADERS, timeout=30)
+def scrape_galeri24():
+    r = requests.get(API_URL, headers=HEADERS, timeout=30)
     r.raise_for_status()
-    return r.json()
 
-def parse_galeri24(json_data: dict):
-    """
-    Parser fleksibel:
-    - page-data
-    - product-variants
-    """
+    json_data = r.json()
+
+    if "data" not in json_data:
+        raise ValueError("Field 'data' tidak ditemukan di response")
 
     records = []
+    for item in json_data["data"]:
+        # field umum product-variants
+        berat = item.get("weight") or item.get("variant_name")
+        harga_jual = item.get("price") or item.get("sell_price")
+        harga_buyback = item.get("buyback_price")
 
-    # CASE 1: product-variants
-    if "data" in json_data and isinstance(json_data["data"], list):
-        items = json_data["data"]
-
-    # CASE 2: page-data (nested)
-    elif "data" in json_data and "items" in json_data["data"]:
-        items = json_data["data"]["items"]
-
-    else:
-        raise ValueError("Struktur JSON tidak dikenali")
-
-    for item in items:
-        berat = (
-            item.get("weight")
-            or item.get("variant_name")
-            or item.get("name")
-        )
-
-        harga_jual = (
-            item.get("price")
-            or item.get("sell_price")
-            or item.get("harga_jual")
-        )
-
-        harga_buyback = (
-            item.get("buyback_price")
-            or item.get("harga_buyback")
-        )
-
-        # skip kalau bukan emas batangan
+        # skip item non-emas
         if not berat or not harga_jual:
             continue
 
         records.append({
             "tanggal": datetime.now().strftime("%Y-%m-%d"),
-            "produk": "Galeri 24",
+            "produk": "GALERI 24",
             "berat": str(berat),
             "harga_jual": int(harga_jual),
             "harga_buyback": int(harga_buyback) if harga_buyback else None
@@ -101,24 +58,27 @@ def parse_galeri24(json_data: dict):
     return pd.DataFrame(records)
 
 # ======================
-# ACTION
+# STREAMLIT UI
 # ======================
-if api_url:
-    try:
-        json_data = fetch_xhr_data(api_url)
-        df = parse_galeri24(json_data)
+st.set_page_config(page_title="Harga Emas Galeri 24", layout="wide")
+st.title("📊 Harga Emas Galeri 24 (LIVE)")
+st.caption("Sumber: galeri24.co.id – API product-variants")
 
-        st.success("✅ Data berhasil diambil dari XHR API")
-        st.dataframe(df, use_container_width=True)
+try:
+    df = scrape_galeri24()
 
-        st.subheader("🔎 Ringkasan")
-        col1, col2 = st.columns(2)
-        col1.metric("Jumlah Varian", len(df))
+    st.success("✅ Data harga GALERI 24 berhasil diambil")
+    st.dataframe(df, use_container_width=True)
 
-        if "1" in df["berat"].astype(str).values:
-            harga_1g = df[df["berat"].astype(str) == "1"]["harga_jual"].iloc[0]
-            col2.metric("Harga Jual 1 gr", f"Rp {harga_1g:,}")
+    st.subheader("🔎 Ringkasan")
+    col1, col2 = st.columns(2)
 
-    except Exception as e:
-        st.error("❌ Gagal ambil / parse data")
-        st.exception(e)
+    col1.metric("Jumlah Varian", len(df))
+
+    if "1" in df["berat"].values:
+        harga_1g = df[df["berat"] == "1"]["harga_jual"].iloc[0]
+        col2.metric("Harga Jual 1 gr", f"Rp {harga_1g:,}")
+
+except Exception as e:
+    st.error("❌ Gagal ambil data harga")
+    st.exception(e)
