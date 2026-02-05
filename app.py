@@ -1,18 +1,14 @@
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
-import gspread
-from google.oauth2.service_account import Credentials
 from datetime import datetime
 import re
+import streamlit as st
 
 # ======================
 # CONFIG
 # ======================
 URL = "https://galeri24.co.id/harga-emas"
-SPREADSHEET_NAME = "Harga Emas Harian"
-SHEET_NAME = "GALERI24"
-CREDENTIALS_FILE = "credentials.json"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -34,8 +30,13 @@ def scrape_galeri24():
     res.raise_for_status()
 
     soup = BeautifulSoup(res.text, "html.parser")
+
     table = soup.find("table")
-    rows = table.find("tbody").find_all("tr")
+    if not table:
+        raise ValueError("❌ Tabel harga emas tidak ditemukan")
+
+    # tidak pakai <tbody> (AMAN)
+    rows = table.find_all("tr")[1:]  # skip header
 
     data = []
     for row in rows:
@@ -48,43 +49,37 @@ def scrape_galeri24():
             "produk": "Galeri 24",
             "berat": cols[0],
             "harga_jual": clean_price(cols[1]),
-            "harga_buyback": clean_price(cols[2]),
-            "sumber": URL
+            "harga_buyback": clean_price(cols[2])
         })
+
+    if not data:
+        raise ValueError("❌ Data kosong – kemungkinan struktur web berubah")
 
     return pd.DataFrame(data)
 
 # ======================
-# GOOGLE SHEET
+# STREAMLIT UI
 # ======================
-def save_to_gsheet(df):
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
+st.set_page_config(page_title="Harga Emas Galeri 24", layout="wide")
+st.title("📊 Harga Emas Galeri 24 (Live)")
 
-    creds = Credentials.from_service_account_file(
-        CREDENTIALS_FILE, scopes=scopes
+st.caption("Sumber: galeri24.co.id – hanya ditampilkan, belum disimpan")
+
+try:
+    df = scrape_galeri24()
+
+    st.success("✅ Data berhasil diambil")
+    st.dataframe(df, use_container_width=True)
+
+    # ringkasan cepat
+    st.subheader("🔎 Ringkasan")
+    col1, col2 = st.columns(2)
+    col1.metric("Jumlah Varian", len(df))
+    col2.metric(
+        "Harga Jual 1 gr",
+        f"Rp {df[df['berat'].str.contains('1')]['harga_jual'].iloc[0]:,}"
     )
 
-    client = gspread.authorize(creds)
-
-    sh = client.open(SPREADSHEET_NAME)
-
-    try:
-        ws = sh.worksheet(SHEET_NAME)
-    except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=SHEET_NAME, rows="100", cols="20")
-        ws.append_row(df.columns.tolist())
-
-    # append data
-    ws.append_rows(df.values.tolist(), value_input_option="USER_ENTERED")
-
-# ======================
-# MAIN
-# ======================
-if __name__ == "__main__":
-    df = scrape_galeri24()
-    save_to_gsheet(df)
-
-    print("✅ Data harga emas Galeri 24 berhasil disimpan ke Google Sheet")
+except Exception as e:
+    st.error("❌ Terjadi error saat scraping")
+    st.exception(e)
