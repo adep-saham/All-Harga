@@ -19,9 +19,9 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/144.0.0.0 Safari/537.36"
     ),
-    "Accept": "application/json,text/html;q=0.9,*/*;q=0.8",
+    "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
     "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://galeri24.co.id/harga-emas",
+    "Referer": "https://galeri24.co.id/",
 }
 
 # ======================
@@ -40,24 +40,20 @@ def to_int(x):
 
 def norm_gram(x):
     s = str(x).lower()
+    s = s.replace(",", ".")
     s = s.replace("gram", "").replace("gr", "").replace("g", "").strip()
     token = s.split()[0] if s.split() else ""
     token = "".join(ch for ch in token if (ch.isdigit() or ch == "."))
     return token if token else None
 
 def find_items(payload):
-    """
-    Cari list item dari berbagai kemungkinan struktur response.
-    """
     if isinstance(payload, list):
         return payload
     if isinstance(payload, dict):
-        # langsung list
         for k in ["data", "items", "results", "result"]:
             v = payload.get(k)
             if isinstance(v, list):
                 return v
-        # nested
         d = payload.get("data")
         if isinstance(d, dict):
             for k in ["items", "results", "result"]:
@@ -67,55 +63,24 @@ def find_items(payload):
     return None
 
 # ======================
-# FETCH JSON / HTML
+# SELL FROM product-variants (sudah OK di kamu)
 # ======================
-def http_get(url: str):
-    r = requests.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
-    return r
-
-# ======================
-# SELL PRICES (PRODUCT VARIANTS) + DEBUG
-# ======================
-def fetch_sell_prices_with_debug():
-    r = http_get(API_VARIANTS)
-
-    with st.expander("🧾 Debug: response product-variants"):
-        st.write("URL:", API_VARIANTS)
-        st.write("Status:", r.status_code)
-        st.write("Final URL:", r.url)
-        st.write("Content-Type:", (r.headers.get("content-type") or ""))
-        st.write("Text length:", len(r.text))
-        st.code(r.text[:4000])
-
+def fetch_sell_prices():
+    r = requests.get(API_VARIANTS, headers=HEADERS, timeout=30)
     r.raise_for_status()
-
-    # pastikan json
-    try:
-        payload = r.json()
-    except Exception:
-        raise ValueError("product-variants tidak mengembalikan JSON (cek debug text di atas)")
+    payload = r.json()
 
     items = find_items(payload)
     if not isinstance(items, list):
-        raise ValueError("Tidak menemukan list items dari response product-variants (cek debug JSON)")
-
-    # tampilkan sample json item
-    with st.expander("🧾 Debug: sample JSON product-variants"):
-        if isinstance(payload, dict):
-            st.json(payload)
-        else:
-            st.json(payload[:3])
+        raise ValueError("Response product-variants tidak berformat list (cek struktur JSON)")
 
     rows = []
     for it in items:
         if not isinstance(it, dict):
             continue
-
-        # ambil label berat
         weight = it.get("weight") or it.get("name") or it.get("variant_name")
         gram = norm_gram(weight)
 
-        # harga jual: coba beberapa key
         sell = (
             it.get("price")
             or it.get("sell_price")
@@ -130,72 +95,119 @@ def fetch_sell_prices_with_debug():
 
     df = pd.DataFrame(rows)
     if df.empty:
-        raise ValueError("Items ditemukan tapi harga_jual kosong (cek sample JSON untuk key harga)")
-
+        raise ValueError("Harga jual kosong setelah parsing product-variants")
     return df
 
 # ======================
-# BUYBACK FROM /HARGA-EMAS (HTML) + DEBUG
+# BUYBACK FROM Nuxt payload in /harga-emas
 # ======================
-def fetch_buyback_from_page():
-    r = http_get(PAGE_URL)
+def extract_buyback_from_any(obj, out):
+    """
+    Rekursif: cari dict yang punya (weight/berat) dan (buyback*)
+    """
+    if isinstance(obj, dict):
+        keys = {k.lower(): k for k in obj.keys()}
 
-    with st.expander("🧾 Debug: response /harga-emas"):
-        st.write("URL:", PAGE_URL)
-        st.write("Status:", r.status_code)
-        st.write("Final URL:", r.url)
-        st.write("Content-Type:", (r.headers.get("content-type") or ""))
-        st.write("HTML length:", len(r.text))
-        st.code(r.text[:5000])
+        # cari key weight/berat
+        weight_key = None
+        for cand in ["weight", "berat", "gram"]:
+            if cand in keys:
+                weight_key = keys[cand]
+                break
 
+        # cari key buyback
+        buy_key = None
+        for k in obj.keys():
+            if "buyback" in str(k).lower():
+                buy_key = k
+                break
+
+        if weight_key and buy_key:
+            gram = norm_gram(obj.get(weight_key))
+            bb = to_int(obj.get(buy_key))
+            if gram and bb:
+                out[gram] = bb
+
+        for v in obj.values():
+            extract_buyback_from_any(v, out)
+
+    elif isinstance(obj, list):
+        for v in obj:
+            extract_buyback_from_any(v, out)
+
+def fetch_buyback_map_from_nuxt():
+    r = requests.get(PAGE_URL, headers=HEADERS, timeout=30)
     r.raise_for_status()
 
-    soup = BeautifulSoup(r.text, "html.parser")
-    table = soup.find("table")
+    html = r.text
+    soup = BeautifulSoup(html, "html.parser")
 
-    if not table:
-        # tidak langsung gagal; return df kosong agar app tetap tampil debug
-        return pd.DataFrame(columns=["gram", "harga_buyback"])
+    # 1) Nuxt 3: __NUXT_DATA__ (JSON)
+    nuxt_data = soup.find("script", id="__NUXT_DATA__")
+    if nuxt_data and (nuxt_data.string or "").strip():
+        jd = json.loads(nuxt_data.string)
+        out = {}
+        extract_buyback_from_any(jd, out)
+        if out:
+            return out
 
-    rows = table.find_all("tr")[1:]
-    out = []
-    for tr in rows:
-        tds = [td.get_text(strip=True) for td in tr.find_all("td")]
-        if len(tds) < 3:
-            continue
-        gram = norm_gram(tds[0])
-        buyback = to_int(tds[2])
-        if gram and buyback:
-            out.append({"gram": gram, "harga_buyback": buyback})
+    # 2) Nuxt 2: window.__NUXT__ = {...}
+    # (coba regex, kadang JSON-compatible)
+    scripts = soup.find_all("script")
+    for sc in scripts:
+        txt = sc.string or ""
+        if "window.__NUXT__" in txt:
+            m = re.search(r"window\.__NUXT__\s*=\s*(\{.*\})\s*;?\s*$", txt.strip(), re.DOTALL)
+            if m:
+                raw = m.group(1)
+                # perapihan minimal (undefined -> null)
+                raw = raw.replace("undefined", "null")
+                try:
+                    jd = json.loads(raw)
+                    out = {}
+                    extract_buyback_from_any(jd, out)
+                    if out:
+                        return out
+                except Exception:
+                    pass
 
-    return pd.DataFrame(out)
+    # kalau tidak ketemu
+    return {}
 
 # ======================
-# UI
+# STREAMLIT UI
 # ======================
 st.set_page_config(page_title="Harga Emas Galeri 24", layout="wide")
 st.title("📊 Harga Emas Galeri 24 (Jual + Buyback)")
-st.caption("Debug selalu muncul: product-variants & /harga-emas")
+st.caption("Jual: product-variants | Buyback: Nuxt payload dari /harga-emas")
+
+with st.expander("🔧 Debug URL"):
+    st.code(API_VARIANTS)
+    st.code(PAGE_URL)
 
 try:
-    df_sell = fetch_sell_prices_with_debug()
-    df_buy = fetch_buyback_from_page()
+    df_sell = fetch_sell_prices()
 
-    df = df_sell.merge(df_buy, on="gram", how="left")
-    df["tanggal"] = datetime.now().strftime("%Y-%m-%d")
-    df["produk"] = "GALERI 24"
-    df = df[["tanggal", "produk", "berat", "harga_jual", "harga_buyback"]]
+    buyback_map = fetch_buyback_map_from_nuxt()
 
-    st.success("✅ Data berhasil diambil (jual terisi; buyback tergantung halaman)")
+    with st.expander("🧾 Debug: buyback_map sample"):
+        # tampilkan 20 item pertama
+        st.write(dict(list(buyback_map.items())[:20]))
+
+    df_sell["harga_buyback"] = df_sell["gram"].map(buyback_map)
+
+    df_sell["tanggal"] = datetime.now().strftime("%Y-%m-%d")
+    df_sell["produk"] = "GALERI 24"
+
+    df = df_sell[["tanggal", "produk", "berat", "harga_jual", "harga_buyback"]]
+
+    st.success("✅ Data berhasil diambil")
     st.dataframe(df, use_container_width=True)
 
-    # ringkasan 1g
     col1, col2, col3 = st.columns(3)
     col1.metric("Jumlah Varian", len(df))
 
-    df_tmp = df.copy()
-    df_tmp["gram"] = df_tmp["berat"].apply(norm_gram)
-    one = df_tmp[df_tmp["gram"] == "1"]
+    one = df_sell[df_sell["gram"] == "1"]
     if not one.empty:
         col2.metric("Harga Jual 1 gr", f"Rp {int(one.iloc[0]['harga_jual']):,}")
         bb = one.iloc[0]["harga_buyback"]
@@ -205,7 +217,11 @@ try:
         col3.metric("Buyback 1 gr", "—")
 
     if df["harga_buyback"].isna().all():
-        st.warning("Buyback masih kosong karena halaman /harga-emas yang diterima server tidak berisi tabel. Lihat Debug /harga-emas untuk penyebabnya.")
+        st.warning(
+            "Buyback masih kosong. Ini berarti payload Nuxt di server tidak memuat data buyback "
+            "(kemungkinan buyback diambil dari XHR lain setelah load)."
+        )
+        st.info("Kalau ini terjadi, kita ambil buyback dari request XHR yang kamu lihat di Network (yang berisi tabel buyback).")
 
 except Exception as e:
     st.error("❌ Gagal ambil data")
