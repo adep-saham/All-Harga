@@ -19,18 +19,24 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/144.0.0.0 Safari/537.36"
     ),
+    "Accept": "application/json,text/html;q=0.9,*/*;q=0.8",
     "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://galeri24.co.id/",
+    "Referer": "https://galeri24.co.id/harga-emas",
 }
 
 # ======================
 # UTIL
 # ======================
-def to_int(text):
-    if text is None:
+def to_int(x):
+    try:
+        if x is None:
+            return None
+        if isinstance(x, str):
+            digits = re.sub(r"[^\d]", "", x)
+            return int(digits) if digits else None
+        return int(x)
+    except Exception:
         return None
-    digits = re.sub(r"[^\d]", "", str(text))
-    return int(digits) if digits else None
 
 def norm_gram(x):
     s = str(x).lower()
@@ -39,50 +45,117 @@ def norm_gram(x):
     token = "".join(ch for ch in token if (ch.isdigit() or ch == "."))
     return token if token else None
 
-def safe_json_loads(s):
-    try:
-        return json.loads(s)
-    except Exception:
-        return None
+def find_items(payload):
+    """
+    Cari list item dari berbagai kemungkinan struktur response.
+    """
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        # langsung list
+        for k in ["data", "items", "results", "result"]:
+            v = payload.get(k)
+            if isinstance(v, list):
+                return v
+        # nested
+        d = payload.get("data")
+        if isinstance(d, dict):
+            for k in ["items", "results", "result"]:
+                v = d.get(k)
+                if isinstance(v, list):
+                    return v
+    return None
 
 # ======================
-# 1) HARGA JUAL (API)
+# FETCH JSON / HTML
 # ======================
-def fetch_sell_prices():
-    r = requests.get(API_VARIANTS, headers=HEADERS, timeout=30)
+def http_get(url: str):
+    r = requests.get(url, headers=HEADERS, timeout=30, allow_redirects=True)
+    return r
+
+# ======================
+# SELL PRICES (PRODUCT VARIANTS) + DEBUG
+# ======================
+def fetch_sell_prices_with_debug():
+    r = http_get(API_VARIANTS)
+
+    with st.expander("🧾 Debug: response product-variants"):
+        st.write("URL:", API_VARIANTS)
+        st.write("Status:", r.status_code)
+        st.write("Final URL:", r.url)
+        st.write("Content-Type:", (r.headers.get("content-type") or ""))
+        st.write("Text length:", len(r.text))
+        st.code(r.text[:4000])
+
     r.raise_for_status()
-    payload = r.json()
 
-    items = payload.get("data") if isinstance(payload, dict) else None
+    # pastikan json
+    try:
+        payload = r.json()
+    except Exception:
+        raise ValueError("product-variants tidak mengembalikan JSON (cek debug text di atas)")
+
+    items = find_items(payload)
     if not isinstance(items, list):
-        raise ValueError("Response product-variants tidak berformat list pada key 'data'")
+        raise ValueError("Tidak menemukan list items dari response product-variants (cek debug JSON)")
+
+    # tampilkan sample json item
+    with st.expander("🧾 Debug: sample JSON product-variants"):
+        if isinstance(payload, dict):
+            st.json(payload)
+        else:
+            st.json(payload[:3])
 
     rows = []
     for it in items:
         if not isinstance(it, dict):
             continue
-        name = it.get("name", "") or it.get("variant_name", "")
-        weight = it.get("weight") or name
+
+        # ambil label berat
+        weight = it.get("weight") or it.get("name") or it.get("variant_name")
         gram = norm_gram(weight)
 
-        sell = it.get("price") or it.get("sell_price") or it.get("sellPrice")
-        sell = int(sell) if sell is not None else None
+        # harga jual: coba beberapa key
+        sell = (
+            it.get("price")
+            or it.get("sell_price")
+            or it.get("sellPrice")
+            or it.get("selling_price")
+            or it.get("sellingPrice")
+        )
+        sell = to_int(sell)
+
         if gram and sell:
             rows.append({"gram": gram, "berat": weight, "harga_jual": sell})
 
     df = pd.DataFrame(rows)
     if df.empty:
-        raise ValueError("Harga jual kosong dari product-variants (filter gram/sell tidak match)")
+        raise ValueError("Items ditemukan tapi harga_jual kosong (cek sample JSON untuk key harga)")
+
     return df
 
 # ======================
-# 2) BUYBACK (MULTI STRATEGY)
+# BUYBACK FROM /HARGA-EMAS (HTML) + DEBUG
 # ======================
-def parse_buyback_from_table(html: str):
-    soup = BeautifulSoup(html, "html.parser")
+def fetch_buyback_from_page():
+    r = http_get(PAGE_URL)
+
+    with st.expander("🧾 Debug: response /harga-emas"):
+        st.write("URL:", PAGE_URL)
+        st.write("Status:", r.status_code)
+        st.write("Final URL:", r.url)
+        st.write("Content-Type:", (r.headers.get("content-type") or ""))
+        st.write("HTML length:", len(r.text))
+        st.code(r.text[:5000])
+
+    r.raise_for_status()
+
+    soup = BeautifulSoup(r.text, "html.parser")
     table = soup.find("table")
+
     if not table:
-        return None  # table tidak ada
+        # tidak langsung gagal; return df kosong agar app tetap tampil debug
+        return pd.DataFrame(columns=["gram", "harga_buyback"])
 
     rows = table.find_all("tr")[1:]
     out = []
@@ -95,113 +168,28 @@ def parse_buyback_from_table(html: str):
         if gram and buyback:
             out.append({"gram": gram, "harga_buyback": buyback})
 
-    return pd.DataFrame(out) if out else None
-
-def parse_buyback_from_next_data(html: str):
-    """
-    Fallback: cari JSON embedded yang memuat buyback.
-    Kita scan:
-    - <script id="__NEXT_DATA__" type="application/json">...</script>
-    - script JSON lain yang mengandung kata buyback
-    """
-    soup = BeautifulSoup(html, "html.parser")
-
-    # 1) __NEXT_DATA__
-    nd = soup.find("script", id="__NEXT_DATA__")
-    if nd and nd.string:
-        jd = safe_json_loads(nd.string)
-        if isinstance(jd, dict):
-            # cari list angka buyback + weight secara heuristik
-            # flatten sederhana: cari dict yang punya key mirip weight + buyback
-            buy_rows = []
-
-            def walk(obj):
-                if isinstance(obj, dict):
-                    keys = set(obj.keys())
-                    # banyak kemungkinan penamaan
-                    weight_key = next((k for k in keys if k.lower() in ["weight", "berat"]), None)
-                    bb_key = next((k for k in keys if "buyback" in k.lower()), None)
-                    if weight_key and bb_key:
-                        gram = norm_gram(obj.get(weight_key))
-                        bb = to_int(obj.get(bb_key))
-                        if gram and bb:
-                            buy_rows.append({"gram": gram, "harga_buyback": bb})
-
-                    for v in obj.values():
-                        walk(v)
-                elif isinstance(obj, list):
-                    for v in obj:
-                        walk(v)
-
-            walk(jd)
-            if buy_rows:
-                # dedup by gram (ambil max/terakhir)
-                m = {}
-                for r in buy_rows:
-                    m[r["gram"]] = r["harga_buyback"]
-                return pd.DataFrame([{"gram": g, "harga_buyback": v} for g, v in m.items()])
-
-    # 2) fallback: scan script yang mengandung "buyback"
-    scripts = soup.find_all("script")
-    buy_rows = []
-    for sc in scripts:
-        txt = sc.string or ""
-        if "buyback" not in txt.lower():
-            continue
-        # cari pola sederhana: "buyback" angka dan "weight" angka
-        # ini heuristik, cukup buat menangkap kasus umum
-        # jika cocok, akan terisi; kalau tidak, return None
-    return None
-
-def fetch_buyback_prices():
-    """
-    Ambil halaman /harga-emas dan ekstrak buyback dengan beberapa strategi.
-    """
-    r = requests.get(PAGE_URL, headers=HEADERS, timeout=30, allow_redirects=True)
-    r.raise_for_status()
-
-    html = r.text
-    ctype = (r.headers.get("content-type") or "").lower()
-
-    with st.expander("🧾 Debug: response /harga-emas"):
-        st.write("Status:", r.status_code)
-        st.write("Content-Type:", ctype)
-        st.write("Final URL:", r.url)
-        st.write("HTML length:", len(html))
-        st.code(html[:5000])  # potongan awal untuk lihat apakah diblok / redirect
-
-    # Strategy A: table
-    df_table = parse_buyback_from_table(html)
-    if df_table is not None and not df_table.empty:
-        return df_table
-
-    # Strategy B: embedded JSON (Next.js)
-    df_next = parse_buyback_from_next_data(html)
-    if df_next is not None and not df_next.empty:
-        return df_next
-
-    raise ValueError("Buyback tidak ditemukan: HTML tidak ada table dan tidak ada JSON embedded yang memuat buyback.")
+    return pd.DataFrame(out)
 
 # ======================
-# MAIN UI
+# UI
 # ======================
 st.set_page_config(page_title="Harga Emas Galeri 24", layout="wide")
 st.title("📊 Harga Emas Galeri 24 (Jual + Buyback)")
-st.caption("Jual: API product-variants | Buyback: multi-strategy dari /harga-emas")
+st.caption("Debug selalu muncul: product-variants & /harga-emas")
 
 try:
-    df_sell = fetch_sell_prices()
-    df_buy = fetch_buyback_prices()
+    df_sell = fetch_sell_prices_with_debug()
+    df_buy = fetch_buyback_from_page()
 
     df = df_sell.merge(df_buy, on="gram", how="left")
     df["tanggal"] = datetime.now().strftime("%Y-%m-%d")
     df["produk"] = "GALERI 24"
     df = df[["tanggal", "produk", "berat", "harga_jual", "harga_buyback"]]
 
-    st.success("✅ Data berhasil diambil")
+    st.success("✅ Data berhasil diambil (jual terisi; buyback tergantung halaman)")
     st.dataframe(df, use_container_width=True)
 
-    # ringkasan
+    # ringkasan 1g
     col1, col2, col3 = st.columns(3)
     col1.metric("Jumlah Varian", len(df))
 
@@ -215,6 +203,9 @@ try:
     else:
         col2.metric("Harga Jual 1 gr", "—")
         col3.metric("Buyback 1 gr", "—")
+
+    if df["harga_buyback"].isna().all():
+        st.warning("Buyback masih kosong karena halaman /harga-emas yang diterima server tidak berisi tabel. Lihat Debug /harga-emas untuk penyebabnya.")
 
 except Exception as e:
     st.error("❌ Gagal ambil data")
