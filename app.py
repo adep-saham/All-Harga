@@ -4,6 +4,7 @@ import pandas as pd
 import re
 from datetime import datetime
 from bs4 import BeautifulSoup
+from io import BytesIO
 
 URL = "https://galeri24.co.id/harga-emas"
 
@@ -12,14 +13,14 @@ URL = "https://galeri24.co.id/harga-emas"
 # =========================
 st.set_page_config(page_title="Harga Emas Galeri24", layout="wide")
 st.title("Harga Emas Galeri24")
-st.write(URL)
+st.caption(URL)
 
 # =========================
 # Helpers
 # =========================
 def rupiah_to_int(s: str) -> int:
     # input examples: "Rp1.560.000", "Rp 1.560.000"
-    s = s.replace("Rp", "").replace(" ", "").strip()
+    s = str(s).replace("Rp", "").replace(" ", "").strip()
     s = s.replace(".", "").replace(",", "")
     return int(s) if s.isdigit() else 0
 
@@ -30,7 +31,7 @@ def format_rp(x: int) -> str:
         return "Rp0"
 
 def normalize_spaces(s: str) -> str:
-    return re.sub(r"\s+", " ", s).strip()
+    return re.sub(r"\s+", " ", str(s)).strip()
 
 def parse_update_label(text: str) -> str:
     # capture full "Diperbarui ...."
@@ -48,6 +49,30 @@ def weight_sort_key(w: float):
         return (0, WEIGHT_RANK[w])
     return (1, w)
 
+def safe_sheet_name(name: str, used: set) -> str:
+    """
+    Excel sheet rules:
+    - max 31 chars
+    - cannot contain : \ / ? * [ ]
+    - cannot be empty
+    - must be unique
+    """
+    cleaned = re.sub(r"[:\\/?*\[\]]", " ", str(name))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        cleaned = "Sheet"
+
+    base = cleaned[:31]
+    candidate = base
+    idx = 2
+    while candidate in used:
+        suffix = f"_{idx}"
+        candidate = (base[:31 - len(suffix)] + suffix)[:31]
+        idx += 1
+
+    used.add(candidate)
+    return candidate
+
 # =========================
 # Fetch
 # =========================
@@ -64,7 +89,7 @@ def fetch_html() -> str:
     return r.text
 
 # =========================
-# Parser (dynamic blocks)
+# Parser (dynamic blocks, tahan perubahan layout)
 # =========================
 def scrape_prices(html: str) -> tuple[pd.DataFrame, str]:
     soup = BeautifulSoup(html, "html.parser")
@@ -73,8 +98,7 @@ def scrape_prices(html: str) -> tuple[pd.DataFrame, str]:
 
     update_label = parse_update_label(text)
 
-    # 1) Ambil semua blok vendor secara dinamis dengan anchor yang stabil:
-    #    "Harga <vendor> Berat Harga Jual Harga Buyback <isi...> (sampai vendor berikutnya / Diperbarui / end)"
+    # Blok vendor: "Harga <vendor> Berat Harga Jual Harga Buyback <body> ..."
     block_pattern = re.compile(
         r"Harga\s+(?P<vendor>.+?)\s+Berat\s+Harga\s+Jual\s+Harga\s+Buyback\s+(?P<body>.+?)"
         r"(?=(?:\s+Harga\s+.+?\s+Berat\s+Harga\s+Jual\s+Harga\s+Buyback)|(?:\s+Diperbarui)|\Z)",
@@ -83,18 +107,16 @@ def scrape_prices(html: str) -> tuple[pd.DataFrame, str]:
 
     blocks = list(block_pattern.finditer(text))
     if not blocks:
-        # Debug minimal biar kamu bisa lihat teksnya kalau berubah lagi
-        preview = text[:800]
-        raise RuntimeError("Tidak menemukan blok vendor. Preview: " + preview)
+        preview = text[:900]
+        raise RuntimeError("Tidak menemukan blok vendor. Preview:\n" + preview)
 
-    rows = []
-
-    # 2) Di dalam masing-masing body, cari pasangan: weight + Rp + Rp (berulang)
-    #    contoh: "0.5 Rp1.560.000 Rp1.394.000"
+    # Pair: "<weight> Rp<sell> Rp<buyback>"
     pair_pattern = re.compile(
         r"(?P<w>\d+(?:\.\d+)?)\s+Rp\s*(?P<sell>[\d\.\,]+)\s+Rp\s*(?P<buy>[\d\.\,]+)",
         re.IGNORECASE,
     )
+
+    rows = []
 
     for b in blocks:
         vendor = normalize_spaces(b.group("vendor")).upper()
@@ -106,7 +128,7 @@ def scrape_prices(html: str) -> tuple[pd.DataFrame, str]:
 
         for p in pairs:
             w = float(p.group("w"))
-            # Filter noise (buang 0.001 dll)
+            # buang noise
             if not (0.5 <= w <= 1000):
                 continue
 
@@ -126,8 +148,7 @@ def scrape_prices(html: str) -> tuple[pd.DataFrame, str]:
 
     df = pd.DataFrame(rows).drop_duplicates(subset=["vendor", "weight_g", "sell_idr", "buyback_idr"])
 
-    # Sort: vendor (sesuai kemunculan di halaman, bukan alfabet) + urutan berat persis
-    # Bikin map order vendor berdasarkan urutan blocks
+    # urutan vendor mengikuti kemunculan di halaman
     vendor_order = []
     for b in blocks:
         v = normalize_spaces(b.group("vendor")).upper()
@@ -150,6 +171,7 @@ if st.button("Ambil data sekarang"):
     try:
         html = fetch_html()
 
+        # debug kecil
         st.caption(f"Panjang HTML: {len(html)} | Ada kata 'Harga ANTAM'?: {'Harga ANTAM' in html}")
 
         df, update_label = scrape_prices(html)
@@ -162,6 +184,7 @@ if st.button("Ambil data sekarang"):
 
         st.success(f"Berhasil: {len(df)} baris")
 
+        # tampil per vendor
         for v in selected:
             st.markdown(f"## Harga {v}")
             sub = df[df["vendor"] == v].copy()
@@ -178,29 +201,42 @@ if st.button("Ambil data sekarang"):
             })
             st.table(display)
 
+        # =========================
+        # DOWNLOAD CSV
+        # =========================
         csv = df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("Download CSV (long)", csv, "galeri24_harga_emas_long.csv", "text/csv")
+        st.download_button(
+            "Download CSV (long)",
+            data=csv,
+            file_name="galeri24_harga_emas_long.csv",
+            mime="text/csv",
+        )
 
-     # --- EXCEL ---
-        from io import BytesIO
+        # =========================
+        # DOWNLOAD EXCEL
+        # =========================
         output = BytesIO()
+        used_sheet_names = set()
 
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            # Sheet 1: data mentah (long)
+            # Sheet 1: raw long
             df.to_excel(writer, index=False, sheet_name="long")
+            used_sheet_names.add("long")
 
-            # Sheet 2+: per vendor
-            for v in df["vendor"].unique():
+            # Sheet per vendor (rapi)
+            for v in vendors:
                 sub = df[df["vendor"] == v].copy()
-                sub = sub.sort_values("weight_g")
+                sub["__w0"] = sub["weight_g"].map(lambda x: weight_sort_key(float(x))[0])
+                sub["__w1"] = sub["weight_g"].map(lambda x: weight_sort_key(float(x))[1])
+                sub = sub.sort_values(["__w0", "__w1"]).drop(columns=["__w0", "__w1"])
 
                 sub_out = pd.DataFrame({
-                    "Berat": sub["weight_g"],
-                    "Harga Jual": sub["sell_idr"],
-                    "Harga Buyback": sub["buyback_idr"],
+                    "Berat": sub["weight_g"].apply(lambda x: int(x) if float(x).is_integer() else x),
+                    "Harga Jual": sub["sell_idr"].apply(format_rp),
+                    "Harga Buyback": sub["buyback_idr"].apply(format_rp),
                 })
 
-                sheet_name = v[:31]  # limit Excel
+                sheet_name = safe_sheet_name(v, used_sheet_names)
                 sub_out.to_excel(writer, index=False, sheet_name=sheet_name)
 
         st.download_button(
@@ -210,7 +246,6 @@ if st.button("Ambil data sekarang"):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-    
     except Exception as e:
         st.error("Gagal ambil data")
         st.exception(e)
