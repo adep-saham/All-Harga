@@ -181,6 +181,36 @@ if st.button("Ambil data sekarang"):
         csv = df.to_csv(index=False).encode("utf-8-sig")
         st.download_button("Download CSV (long)", csv, "galeri24_harga_emas_long.csv", "text/csv")
 
+     # --- EXCEL ---
+        from io import BytesIO
+        output = BytesIO()
+
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            # Sheet 1: data mentah (long)
+            df.to_excel(writer, index=False, sheet_name="long")
+
+            # Sheet 2+: per vendor
+            for v in df["vendor"].unique():
+                sub = df[df["vendor"] == v].copy()
+                sub = sub.sort_values("weight_g")
+
+                sub_out = pd.DataFrame({
+                    "Berat": sub["weight_g"],
+                    "Harga Jual": sub["sell_idr"],
+                    "Harga Buyback": sub["buyback_idr"],
+                })
+
+                sheet_name = v[:31]  # limit Excel
+                sub_out.to_excel(writer, index=False, sheet_name=sheet_name)
+
+        st.download_button(
+            "Download Excel (.xlsx)",
+            data=output.getvalue(),
+            file_name="galeri24_harga_emas.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    
     except Exception as e:
         st.error("Gagal ambil data")
         st.exception(e)
