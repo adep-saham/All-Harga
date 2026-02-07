@@ -1,66 +1,46 @@
 # scrapers/hakabegold.py
 # ============================================================
-# HakaBe Gold Scraper
-# Direct XLSX Downloader (OneDrive public link)
-# No iframe, no JS, server-safe
+# HK Logam Mulia (HakaBe Gold)
+# FIXED: direct XLSX download (no iframe, no JS)
+# Compatible with existing app.py (DO NOT CHANGE app.py)
 # ============================================================
 
 import requests
 import pandas as pd
 from io import BytesIO
 from datetime import datetime
-from typing import Optional
 
 
 # ============================================================
-# CONFIG
+# PUBLIC URL (WAJIB DIGANTI)
 # ============================================================
 
-HAKABEGOLD_XLSX_URL = (
-    "https://onedrive.live.com/download?resid=XXXXXXXXXXXX"
-)
-# ⬆️ GANTI dengan direct-download link XLSX (WAJIB PUBLIC)
-
-REQUEST_TIMEOUT = 30
-SOURCE_NAME = "hakabegold"
+URL_HAKABEGOLD = "https://onedrive.live.com/download?resid=XXXXXXXXXXXX"
+# ⬆️ GANTI dengan link XLSX OneDrive PUBLIC (direct download)
 
 
 # ============================================================
-# INTERNAL HELPERS
+# INTERNAL
 # ============================================================
-
-def _validate_xlsx_url(url: str) -> None:
-    if not url:
-        raise RuntimeError("XLSX URL kosong")
-
-    if "onedrive.live.com/download" not in url:
-        raise RuntimeError(
-            "URL bukan direct-download OneDrive. "
-            "Gunakan https://onedrive.live.com/download?resid=..."
-        )
-
 
 def _download_xlsx(url: str) -> bytes:
-    _validate_xlsx_url(url)
+    if "onedrive.live.com/download" not in url:
+        raise RuntimeError(
+            "URL_HAKABEGOLD harus direct download OneDrive "
+            "(https://onedrive.live.com/download?resid=...)"
+        )
 
-    try:
-        resp = requests.get(url, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
-        return resp.content
-    except requests.RequestException as e:
-        raise RuntimeError(f"Gagal download XLSX HakaBe Gold: {e}") from e
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    return r.content
 
 
 def _parse_xlsx(xlsx_bytes: bytes) -> pd.DataFrame:
-    try:
-        df = pd.read_excel(BytesIO(xlsx_bytes))
-    except Exception as e:
-        raise RuntimeError("Gagal parse XLSX HakaBe Gold") from e
+    df = pd.read_excel(BytesIO(xlsx_bytes))
 
-    # Normalisasi nama kolom
+    # normalisasi kolom
     df.columns = (
-        df.columns
-        .astype(str)
+        df.columns.astype(str)
         .str.strip()
         .str.lower()
         .str.replace(" ", "_")
@@ -70,36 +50,31 @@ def _parse_xlsx(xlsx_bytes: bytes) -> pd.DataFrame:
 
 
 # ============================================================
-# PUBLIC API
+# PUBLIC API (DIPAKAI app.py)
 # ============================================================
 
-def fetch_hakabegold(
-    xlsx_url: Optional[str] = None
-) -> pd.DataFrame:
+def parse_hakabegold(_unused: str = ""):
     """
-    Fetch & parse harga emas HakaBe Gold
+    Signature DIJAGA untuk kompatibilitas:
+    parse_hakabegold("")
 
     Returns:
-        pd.DataFrame
+        df (DataFrame)
+        update_label (str)
     """
-    url = xlsx_url or HAKABEGOLD_XLSX_URL
 
-    xlsx_bytes = _download_xlsx(url)
+    xlsx_bytes = _download_xlsx(URL_HAKABEGOLD)
     df = _parse_xlsx(xlsx_bytes)
 
-    # Metadata
-    df["_source"] = SOURCE_NAME
-    df["_fetched_at"] = datetime.utcnow()
+    # pastikan kolom wajib ada (sesuai app.py)
+    required = {"vendor", "weight_g", "sell_idr", "buyback_idr"}
+    missing = required - set(df.columns)
+    if missing:
+        raise RuntimeError(f"Kolom wajib tidak ditemukan: {missing}")
 
-    return df
+    update_label = (
+        "HK Logam Mulia "
+        f"(update: {datetime.now().strftime('%d %b %Y %H:%M')})"
+    )
 
-
-# ============================================================
-# LOCAL DEBUG
-# ============================================================
-
-if __name__ == "__main__":
-    df = fetch_hakabegold()
-    print("✅ HakaBe Gold loaded")
-    print(df.head())
-    print(f"Total rows: {len(df)}")
+    return df, update_label
