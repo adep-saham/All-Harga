@@ -10,6 +10,7 @@ from scrapers.stargold import parse_stargold, URL_STARGOLD
 from scrapers.anekalogam import parse_anekalogam, URL_ANEKALOGAM
 from scrapers.hrta import parse_hrta, URL_HRTA
 from scrapers.indogold import parse_indogold, URL_INDOGOLD
+from scrapers.hakabegold import parse_hakabegold, URL_HAKABEGOLD
 
 
 # =========================
@@ -65,7 +66,7 @@ st.set_page_config(page_title="All Harga Emas", layout="wide")
 st.title("All Harga Emas")
 
 # Source selector
-source = st.sidebar.radio("Sumber", ["Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold"], index=0)
+source = st.sidebar.radio("Sumber", ["Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold", "HK Logam Mulia"], index=0)
 
 # URL mapping (caption)
 URLS = {
@@ -74,6 +75,8 @@ URLS = {
     "AnekaLogam": URL_ANEKALOGAM,
     "HRTA": URL_HRTA,
     "IndoGold": URL_INDOGOLD,
+    "HK Logam Mulia": URL_HAKABEGOLD,
+
 }
 st.caption(URLS[source])
 
@@ -101,6 +104,8 @@ if st.button("Ambil data sekarang"):
                 df, update_label = parse_stargold(html)
             elif source == "AnekaLogam":
                 df, update_label = parse_anekalogam(html)
+            elif source == "HK Logam Mulia":
+                df, update_label = parse_hakabegold(html)
             else:  # HRTA
                 df, update_label = parse_hrta("")
 
