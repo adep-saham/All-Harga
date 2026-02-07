@@ -46,7 +46,13 @@ st.set_page_config(page_title="All Harga Emas", layout="wide")
 st.title("All Harga Emas")
 
 source = st.sidebar.radio("Sumber", ["Galeri24", "StarGold", "AnekaLogam"], index=0)
-st.caption(URL_GALERI24 if source == "Galeri24" else URL_STARGOLD)
+st.caption(URLS = {
+    "Galeri24": URL_GALERI24,
+    "StarGold": URL_STARGOLD,
+    "AnekaLogam": URL_ANEKALOGAM,
+}
+st.caption(URLS[source])
+)
 
 if st.button("Ambil data sekarang"):
     try:
