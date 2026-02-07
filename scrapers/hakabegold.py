@@ -13,98 +13,102 @@ URL_HAKABEGOLD = "https://www.logammuliahk.com/#work"
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
     })
     return s
 
-def _extract_direct_url(html_content: str) -> Optional[str]:
-    """Mencari resid dan authkey dari iframe OneDrive untuk membuat link download langsung."""
-    # Mencari pola link OneDrive di dalam iframe (baik 1drv.ms atau onedrive.live.com)
-    # Kita fokus mencari resid karena itu kunci utamanya
-    match = re.search(r'resid=([A-Z0-9!]+)', html_content, re.I)
-    auth_match = re.search(r'authkey=([A-Za-z0-9\-_!]+)', html_content, re.I)
+def _extract_direct_url(s: requests.Session, main_html: str) -> str:
+    """Mengekstrak resid dan authkey dari iframe untuk membuat link download biner."""
+    # 1. Cari URL iframe OneDrive dari HTML Blogger
+    iframe_match = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', main_html, re.I)
+    if not iframe_match:
+        # Fallback link jika iframe tidak ditemukan (berdasarkan data htlm.txt Anda)
+        return "https://onedrive.live.com/download?resid=F82EA6CD27A31B67!106&authkey=!AI3AF18"
     
-    if match:
-        resid = match.group(1)
-        authkey = auth_match.group(1) if auth_match else ""
-        return f"https://onedrive.live.com/download?resid={resid}&authkey={authkey}"
-    return None
-
-def _to_int(x) -> int:
-    if x is None or pd.isna(x): return 0
-    s = re.sub(r"[^\d]", "", str(x))
-    return int(s) if s.isdigit() else 0
-
-def _to_float(x) -> float:
-    if x is None or pd.isna(x): return 0.0
+    iframe_url = iframe_match.group(1).replace("&amp;", "&")
+    
+    # 2. Ikuti redirect untuk mendapatkan resid & authkey dari URL akhir
     try:
-        return float(str(x).replace(",", "."))
+        r = s.get(iframe_url, allow_redirects=True, timeout=15)
+        final_url = r.url
+        qs = parse_qs(urlparse(final_url).query)
+        
+        resid = (qs.get("resid") or [None])[0]
+        authkey = (qs.get("authkey") or [None])[0]
+        
+        if not resid:
+            # Cari resid di dalam body HTML jika tidak ada di URL
+            res_m = re.search(r'["\']resid["\']\s*:\s*["\']([^"\']+)["\']', r.text)
+            resid = res_m.group(1) if res_m else "F82EA6CD27A31B67!106"
+            
+        dl_url = f"https://onedrive.live.com/download?resid={resid}"
+        if authkey:
+            dl_url += f"&authkey={authkey}"
+        return dl_url
     except:
-        return 0.0
+        return "https://onedrive.live.com/download?resid=F82EA6CD27A31B67!106&authkey=!AI3AF18"
+
+def _clean_val(val) -> int:
+    if pd.isna(val) or val is None: return 0
+    return int(re.sub(r"[^\d]", "", str(val))) if re.sub(r"[^\d]", "", str(val)) else 0
 
 def parse_hakabegold(html: str = "") -> Tuple[pd.DataFrame, str]:
     s = _session()
     
-    # 1. Jika html kosong, ambil dulu dari web utama
+    # Ambil HTML utama jika kosong
     if not html:
-        r_main = s.get(URL_HAKABEGOLD, timeout=30)
-        html = r_main.text
+        r = s.get(URL_HAKABEGOLD, timeout=15)
+        html = r.text
 
-    # 2. Ambil link download langsung
-    download_url = _extract_direct_url(html)
-    if not download_url:
-        # Fallback ke link manual jika gagal extract (gunakan link terbaru dari screenshot kamu)
-        download_url = "https://onedrive.live.com/download?resid=F82EA6CD27A31B67!106&authkey=!AI3AF18"
+    # Dapatkan link download langsung
+    download_url = _extract_direct_url(s, html)
+    
+    # Unduh file Excel
+    r_file = s.get(download_url, timeout=30)
+    if "text/html" in r_file.headers.get("Content-Type", "").lower():
+        raise RuntimeError("Gagal mengunduh file Excel (OneDrive mengembalikan HTML).")
 
-    # 3. Unduh file XLSX
-    r = s.get(download_url, timeout=30, allow_redirects=True)
-    if "text/html" in r.headers.get("Content-Type", "").lower():
-        raise RuntimeError("OneDrive mengembalikan HTML, bukan file Excel. Pastikan file di OneDrive diset 'Public'.")
-
-    # 4. Parsing Excel
-    xls = pd.ExcelFile(BytesIO(r.content))
+    # Baca semua sheet untuk mencari tabel
+    xls = pd.read_excel(BytesIO(r_file.content), sheet_name=None, header=None)
+    
     data_df = None
     asof_label = "HK Logam Mulia"
     buyback_val = 0
 
-    # Cari di semua sheet, cari yang ada kolom 'Berat'
-    for sheet_name in xls.sheet_names:
-        raw = pd.read_excel(xls, sheet_name=sheet_name, header=None)
-        
-        header_row = None
-        for i, row in raw.head(40).iterrows():
-            row_str = " ".join(row.astype(str).lower())
-            if "berat" in row_str and "harga end user" in row_str:
-                header_row = i
-                break
-        
-        if header_row is not None:
-            df = pd.read_excel(xls, sheet_name=sheet_name, header=header_row)
-            df.columns = [str(c).strip().lower() for c in df.columns]
+    for name, df in xls.items():
+        # Cari baris yang mengandung teks 'Berat'
+        mask = df.apply(lambda row: row.astype(str).str.contains('Berat', case=False).any(), axis=1)
+        if mask.any():
+            idx = mask.idxmax()
+            header = df.iloc[idx].astype(str).str.strip().tolist()
+            temp_df = df.iloc[idx+1:].copy()
+            temp_df.columns = header
             
-            col_w = next((c for c in df.columns if "berat" in c), None)
-            col_s = next((c for c in df.columns if "harga end user" in c), None)
+            col_w = next((c for c in header if 'Berat' in c), None)
+            col_s = next((c for c in header if 'Harga End User' in c), None)
             
             if col_w and col_s:
-                df = df[[col_w, col_s]].dropna().copy()
-                df.columns = ["weight_g", "sell_raw"]
-                df["weight_g"] = df["weight_g"].apply(_to_float)
-                df["sell_idr"] = df["sell_raw"].apply(_to_int)
-                data_df = df[df["weight_g"] > 0].copy()
+                temp_df = temp_df[[col_w, col_s]].dropna()
+                temp_df.columns = ["weight_g", "sell_raw"]
+                temp_df["weight_g"] = pd.to_numeric(temp_df["weight_g"], errors='coerce')
+                temp_df["sell_idr"] = temp_df["sell_raw"].apply(_clean_val)
+                data_df = temp_df[temp_df["weight_g"] > 0].copy()
                 
-                # Ekstrak Meta (Tanggal & Buyback) dari sheet yang sama
-                full_text = " ".join(raw.astype(str).fillna("").values.ravel()).lower()
-                date_m = re.search(r"(\w+\s+\d{1,2},\s+\d{4})", full_text)
+                # Cari meta data (Tanggal & Buyback)
+                all_text = " ".join(df.astype(str).values.flatten()).lower()
+                # Ekstrak Tanggal
+                date_m = re.search(r"(\w+\s+\d{1,2},\s+\d{4})", all_text)
                 if date_m: asof_label += f" — {date_m.group(1).title()}"
                 
-                bb_m = re.search(r"buyback.*?([\d\.,]{5,})", full_text)
+                # Ekstrak Buyback
+                bb_m = re.search(r"buyback.*?([\d\.,]{5,})", all_text)
                 if bb_m:
-                    buyback_val = _to_int(bb_m.group(1))
+                    buyback_val = _clean_val(bb_m.group(1))
                     asof_label += f" — Buyback/gr: Rp{buyback_val:,}".replace(",", ".")
                 break
 
     if data_df is None:
-        return pd.DataFrame(), "HK Logam Mulia — Tabel tidak ditemukan"
+        return pd.DataFrame(), "HK Logam Mulia — Data tidak ditemukan"
 
     data_df["vendor"] = "HK Logam Mulia"
     data_df["buyback_idr"] = (data_df["weight_g"] * buyback_val).astype(int)
