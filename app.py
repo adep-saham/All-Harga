@@ -9,6 +9,8 @@ from scrapers.stargold import parse_stargold, URL_STARGOLD
 from scrapers.anekalogam import parse_anekalogam, URL_ANEKALOGAM
 from scrapers.hrta import parse_hrta, URL_HRTA
 from scrapers.indogold import parse_indogold, URL_INDOGOLD
+
+# ✅ tambah HK Logam Mulia
 from scrapers.hakabegold import parse_hakabegold, URL_HAKABEGOLD
 
 
@@ -20,7 +22,6 @@ def format_rp(x: int) -> str:
         return f"Rp{int(x):,}".replace(",", ".")
     except Exception:
         return "Rp0"
-
 
 def safe_sheet_name(name: str, used: set) -> str:
     # Excel forbidden: : \ / ? * [ ]
@@ -36,19 +37,10 @@ def safe_sheet_name(name: str, used: set) -> str:
     used.add(candidate)
     return candidate
 
-
 @st.cache_data(ttl=180)
 def fetch_html(url: str) -> str:
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/144.0.0.0 Safari/537.36"
-        ),
-        "Accept": (
-            "text/html,application/xhtml+xml,application/xml;"
-            "q=0.9,image/avif,image/webp,*/*;q=0.8"
-        ),
+        "User-Agent": "Mozilla/5.0",
         "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
@@ -64,21 +56,21 @@ def fetch_html(url: str) -> str:
 st.set_page_config(page_title="All Harga Emas", layout="wide")
 st.title("All Harga Emas")
 
-# Source selector
+# ✅ tambah HK Logam Mulia di selector
 source = st.sidebar.radio(
     "Sumber",
     ["Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold", "HK Logam Mulia"],
     index=0
 )
 
-# URL mapping (caption)
+# URL mapping
 URLS = {
     "Galeri24": URL_GALERI24,
     "StarGold": URL_STARGOLD,
     "AnekaLogam": URL_ANEKALOGAM,
     "HRTA": URL_HRTA,
     "IndoGold": URL_INDOGOLD,
-    "HK Logam Mulia": URL_HAKABEGOLD,
+    "HK Logam Mulia": URL_HAKABEGOLD,  # ✅
 }
 st.caption(URLS[source])
 
@@ -86,41 +78,31 @@ st.write("")  # spacer
 
 if st.button("Ambil data sekarang"):
     try:
-        # =========================
-        # Fetch + Parse per source
-        # =========================
-        if source == "IndoGold":
-            url = URLS[source]
-            html = fetch_html(url)
-            df, update_label = parse_indogold(html)
+        url = URLS[source]
 
-        elif source == "HK Logam Mulia":
-            # HakabeGold: parse_hakabegold() sekarang auto-discover sendiri (tanpa secret OneDrive)
+        # ✅ HK Logam Mulia tidak pakai fetch_html biasa (dia fetch sendiri + auto-discover)
+        if source == "HK Logam Mulia":
             df, update_label = parse_hakabegold("")
-
         else:
-            url = URLS[source]
             html = fetch_html(url)
 
+            # parse sesuai source
             if source == "Galeri24":
                 df, update_label = parse_galeri24(html)
             elif source == "StarGold":
                 df, update_label = parse_stargold(html)
             elif source == "AnekaLogam":
                 df, update_label = parse_anekalogam(html)
+            elif source == "IndoGold":
+                df, update_label = parse_indogold(html)
             else:  # HRTA
                 df, update_label = parse_hrta("")
 
         st.subheader(update_label)
         st.success(f"Berhasil: {len(df)} baris")
 
-        # Guard: DF harus valid
-        if df.empty or "vendor" not in df.columns:
-            st.warning("Data kosong atau struktur berubah.")
-            st.stop()
-
         # vendor list
-        vendors = sorted(df["vendor"].unique().tolist())
+        vendors = df["vendor"].unique().tolist()
         selected = st.sidebar.multiselect("Pilih Vendor", vendors, default=vendors)
 
         # render per vendor
@@ -146,7 +128,7 @@ if st.button("Ambil data sekarang"):
         st.download_button(
             "Download CSV (long)",
             data=csv,
-            file_name=f"{source.lower()}_harga_emas_long.csv",
+            file_name=f"{source.lower().replace(' ', '_')}_harga_emas_long.csv",
             mime="text/csv",
         )
 
@@ -178,7 +160,7 @@ if st.button("Ambil data sekarang"):
         st.download_button(
             "Download Excel (.xlsx)",
             data=output.getvalue(),
-            file_name=f"{source.lower()}_harga_emas.xlsx",
+            file_name=f"{source.lower().replace(' ', '_')}_harga_emas.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
