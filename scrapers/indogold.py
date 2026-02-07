@@ -4,8 +4,10 @@ import json
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
 
 URL_INDOGOLD = "https://www.indogold.id/harga-emas-hari-ini"
+BASE = "https://www.indogold.id"
 API_PRICELIST = "https://www.indogold.id/home/get_data_pricelist"
 
 STD_COLS = ["vendor", "weight_g", "sell_idr", "buyback_idr"]
@@ -15,6 +17,17 @@ UA = {
     "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
+}
+
+HEADERS_HTML = {
+    **UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+HEADERS_API = {
+    **UA,
+    "Accept": "*/*",
+    "Origin": "https://www.indogold.id",
+    "Referer": URL_INDOGOLD,
 }
 
 
@@ -34,16 +47,14 @@ def _find_last_update(text: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
-def _extract_token_from_html(html: str) -> str | None:
+def _extract_token_any(text: str) -> str | None:
     """
-    Lebih agresif:
-    1) pola input hidden
-    2) pola json/js
-    3) cari hex32 yang dekat kata simulasi/token
+    Token IndoGold terlihat seperti 32-hex (contoh: f8c593ec3314c01f904a9c5515989387)
     """
-    if not html:
+    if not text:
         return None
 
+    # pola eksplisit
     patterns = [
         r'name=["\']simulasi-token["\']\s*value=["\']([a-f0-9]{16,64})["\']',
         r'"simulasi-token"\s*:\s*"([a-f0-9]{16,64})"',
@@ -51,76 +62,79 @@ def _extract_token_from_html(html: str) -> str | None:
         r'simulasi-token\s*=\s*"([a-f0-9]{16,64})"',
     ]
     for p in patterns:
-        m = re.search(p, html, flags=re.I)
+        m = re.search(p, text, flags=re.I)
         if m:
             return m.group(1)
 
-    # heuristik: cari hex32 yang dekat "simulasi" / "token"
-    for m in re.finditer(r"\b[a-f0-9]{32}\b", html, flags=re.I):
-        start = max(0, m.start() - 250)
-        end = min(len(html), m.end() + 250)
-        around = html[start:end].lower()
-        if "simulasi" in around or "token" in around:
-            return m.group(0)
-
-    return None
+    # fallback: cari hex32
+    m = re.search(r"\b[a-f0-9]{32}\b", text, flags=re.I)
+    return m.group(0) if m else None
 
 
-def _try_fetch_token_endpoints(session: requests.Session) -> str | None:
+def _is_local_script(url: str) -> bool:
+    try:
+        host = urlparse(url).netloc.lower()
+        return host.endswith("indogold.id")
+    except Exception:
+        return False
+
+
+def _extract_script_urls(html: str) -> list[str]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    urls = []
+    for s in soup.find_all("script"):
+        src = s.get("src")
+        if src:
+            full = urljoin(BASE, src)
+            if _is_local_script(full):
+                urls.append(full)
+    # unique preserve order
+    seen = set()
+    out = []
+    for u in urls:
+        if u not in seen:
+            out.append(u)
+            seen.add(u)
+    return out
+
+
+def _extract_home_endpoints(text: str) -> list[str]:
     """
-    Karena token tidak muncul di HTML/JS di Streamlit Cloud,
-    coba beberapa endpoint umum yang sering dipakai web CI / CSRF token.
-    Kita scan responnya untuk hex32.
+    Ambil semua string endpoint /home/xxx dari HTML/JS.
     """
-    candidates = [
-        "https://www.indogold.id/home/get_simulasi_token",
-        "https://www.indogold.id/home/get_simulasiToken",
-        "https://www.indogold.id/home/get_token",
-        "https://www.indogold.id/home/token",
-        "https://www.indogold.id/home/get_csrf",
-        "https://www.indogold.id/home/csrf",
-    ]
+    eps = set()
+    for m in re.finditer(r"(\/home\/[a-zA-Z0-9_]+)", text or ""):
+        eps.add(m.group(1))
+    # prioritaskan yang mengandung token/simulasi
+    prioritized = sorted(
+        eps,
+        key=lambda x: (("token" not in x and "simul" not in x), len(x))
+    )
+    return prioritized
 
-    headers = {
-        **UA,
-        "Accept": "*/*",
-        "Origin": "https://www.indogold.id",
-        "Referer": URL_INDOGOLD,
-    }
 
-    for url in candidates:
+def _try_get_token_from_candidates(session: requests.Session, candidates: list[str]) -> str | None:
+    for path in candidates:
+        url = urljoin(BASE, path)
         try:
-            r = session.get(url, headers=headers, timeout=20)
+            r = session.get(url, headers=HEADERS_API, timeout=20)
             if r.status_code != 200:
                 continue
-            txt = r.text or ""
-            m = re.search(r"\b[a-f0-9]{32}\b", txt, flags=re.I)
-            if m:
-                return m.group(0)
+            tok = _extract_token_any(r.text or "")
+            if tok and re.fullmatch(r"[a-f0-9]{32}", tok, flags=re.I):
+                return tok
         except Exception:
             continue
-
     return None
 
 
-def _post_pricelist(session: requests.Session, token: str, product_key: str) -> tuple[dict | None, str]:
-    """
-    Return (json_or_none, raw_text)
-    Agar tidak crash kalau response HTML.
-    """
+def _post_pricelist(session: requests.Session, token: str) -> tuple[dict | None, str]:
     files = {
-        "form": (None, json.dumps({"product": product_key}), "application/json"),
+        "form": (None, json.dumps({"product": "comparison_antamxubs"}), "application/json"),
         "simulasi-token": (None, token),
     }
-    headers = {
-        **UA,
-        "Accept": "*/*",
-        "Origin": "https://www.indogold.id",
-        "Referer": URL_INDOGOLD,
-    }
-    r = session.post(API_PRICELIST, headers=headers, files=files, timeout=30)
+    r = session.post(API_PRICELIST, headers=HEADERS_API, files=files, timeout=30)
     raw = r.text or ""
-    # coba json kalau memang json
     try:
         return r.json(), raw
     except Exception:
@@ -128,7 +142,12 @@ def _post_pricelist(session: requests.Session, token: str, product_key: str) -> 
 
 
 def _parse_comparison_json(payload: dict) -> pd.DataFrame:
+    """
+    payload contoh:
+    {"status": true, "data": {"list_variant":["UBS","Antam"], "data_denom": {...}, "type":"comparison"}}
+    """
     rows = []
+
     data = payload.get("data", {}) if isinstance(payload, dict) else {}
     denom_map = data.get("data_denom", {}) if isinstance(data, dict) else {}
     variants = data.get("list_variant", ["UBS", "Antam"]) if isinstance(data, dict) else ["UBS", "Antam"]
@@ -145,10 +164,10 @@ def _parse_comparison_json(payload: dict) -> pd.DataFrame:
             bb = _idr(obj.get("harga_buyback", ""))
 
             if sell or bb:
-                if brand == "UBS":
+                if brand.strip().upper() == "UBS":
                     rows.append({"vendor": "Perbandingan - UBS", "weight_g": w, "sell_idr": sell, "buyback_idr": bb})
                     rows.append({"vendor": "UBS", "weight_g": w, "sell_idr": sell, "buyback_idr": bb})
-                elif brand.lower() == "antam":
+                elif brand.strip().lower() == "antam":
                     rows.append({"vendor": "Perbandingan - Antam", "weight_g": w, "sell_idr": sell, "buyback_idr": bb})
                     rows.append({"vendor": "Antam", "weight_g": w, "sell_idr": sell, "buyback_idr": bb})
 
@@ -158,6 +177,7 @@ def _parse_comparison_json(payload: dict) -> pd.DataFrame:
 def _dedup(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
+
     df["weight_g"] = pd.to_numeric(df["weight_g"], errors="coerce").fillna(0.0)
     df["sell_idr"] = pd.to_numeric(df["sell_idr"], errors="coerce").fillna(0).astype(int)
     df["buyback_idr"] = pd.to_numeric(df["buyback_idr"], errors="coerce").fillna(0).astype(int)
@@ -173,24 +193,55 @@ def _dedup(df: pd.DataFrame) -> pd.DataFrame:
 
 def parse_indogold(html: str):
     """
-    IndoGold:
-    - Gunakan HTML dari app.py untuk last_update + attempt token.
-    - Kalau token tidak ada di HTML, coba endpoint token heuristik.
-    - POST API get_data_pricelist (comparison_antamxubs), parse JSON data_denom.
+    Flow:
+    - pakai HTML dari app untuk last_update
+    - scan HTML + JS lokal untuk menemukan endpoint token yang benar
+    - call endpoint token -> dapat token hex32
+    - POST get_data_pricelist -> pastikan status true -> parse data_denom
     """
     empty_df = pd.DataFrame(columns=STD_COLS)
 
     soup = BeautifulSoup(html or "", "html.parser")
     last_update = _find_last_update(soup.get_text(" ", strip=True))
 
-    s = requests.Session()
+    session = requests.Session()
 
-    # 1) token dari HTML dulu
-    token = _extract_token_from_html(html or "")
+    # 0) buka halaman (biar cookie/session kebentuk)
+    # (HTML sudah dari app, tapi session di sini butuh cookie juga)
+    try:
+        session.get(URL_INDOGOLD, headers=HEADERS_HTML, timeout=20)
+    except Exception:
+        pass
 
-    # 2) kalau masih None, coba endpoint token
+    # 1) cari token langsung di HTML (kalau ada)
+    token = _extract_token_any(html or "")
+
+    # 2) kalau tidak ada, cari endpoint token dari HTML/JS
     if not token:
-        token = _try_fetch_token_endpoints(s)
+        candidates = []
+        # dari HTML
+        candidates += _extract_home_endpoints(html or "")
+
+        # dari JS lokal
+        script_urls = _extract_script_urls(html or "")
+        for js_url in script_urls[:25]:  # cukup 25 biar cepat
+            try:
+                r = session.get(js_url, headers=HEADERS_API, timeout=20)
+                if r.status_code != 200:
+                    continue
+                candidates += _extract_home_endpoints(r.text or "")
+            except Exception:
+                continue
+
+        # unik + tetap urut
+        seen = set()
+        uniq = []
+        for c in candidates:
+            if c not in seen:
+                uniq.append(c)
+                seen.add(c)
+
+        token = _try_get_token_from_candidates(session, uniq)
 
     if not token:
         label = "IndoGold — token tidak ditemukan"
@@ -198,24 +249,32 @@ def parse_indogold(html: str):
             label = f"IndoGold — token tidak ditemukan — Last Update: {last_update}"
         return empty_df, label
 
-    # 3) call API
-    payload, raw = _post_pricelist(s, token=token, product_key="comparison_antamxubs")
+    # 3) POST pricelist
+    payload, raw = _post_pricelist(session, token=token)
 
     if not payload:
-        # tampilkan petunjuk yang berguna, bukan crash
-        # (raw biasanya HTML error/redirect)
-        hint = raw[:200].replace("\n", " ").strip()
-        label = f"IndoGold — API tidak mengembalikan JSON (hint: {hint})"
+        hint = (raw[:200] or "").replace("\n", " ").strip()
+        label = f"IndoGold — API tidak JSON (hint: {hint})"
         if last_update:
             label = f"IndoGold — API tidak JSON — Last Update: {last_update}"
         return empty_df, label
 
-    # 4) parse JSON
+    # 4) pastikan status true (kalau status false, ini biasanya token salah)
+    if payload.get("status") is False:
+        # banyak backend taruh message di "message" / "msg" / "data"
+        msg = payload.get("message") or payload.get("msg") or ""
+        label = f"IndoGold — status false (token invalid) {msg}".strip()
+        if last_update:
+            label = f"IndoGold — status false (token invalid) — Last Update: {last_update}"
+        return empty_df, label
+
     df = _parse_comparison_json(payload)
     df = _dedup(df)
 
     if df.empty:
-        label = "IndoGold — parsing kosong (struktur JSON berubah)"
+        # supaya tidak generik, tampilkan key penting (debug ringan)
+        keys = list((payload.get("data") or {}).keys()) if isinstance(payload, dict) else []
+        label = f"IndoGold — parsing kosong (keys: {keys})"
         if last_update:
             label = f"IndoGold — parsing kosong — Last Update: {last_update}"
         return empty_df, label
