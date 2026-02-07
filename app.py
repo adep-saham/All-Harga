@@ -13,7 +13,7 @@ from scrapers.indogold import parse_indogold, URL_INDOGOLD
 
 
 # =========================
-# Helpers UI / Formatting
+# Helpers UI/Download
 # =========================
 def format_rp(x: int) -> str:
     try:
@@ -23,6 +23,7 @@ def format_rp(x: int) -> str:
 
 
 def safe_sheet_name(name: str, used: set) -> str:
+    # Excel forbidden: : \ / ? * [ ]
     cleaned = re.sub(r"[:\\/?*\[\]]", " ", str(name))
     cleaned = re.sub(r"\s+", " ", cleaned).strip() or "Sheet"
     base = cleaned[:31]
@@ -64,12 +65,9 @@ st.set_page_config(page_title="All Harga Emas", layout="wide")
 st.title("All Harga Emas")
 
 # Source selector
-source = st.sidebar.radio(
-    "Sumber",
-    ["Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold"],
-    index=0,
-)
+source = st.sidebar.radio("Sumber", ["Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold"], index=0)
 
+# URL mapping (caption)
 URLS = {
     "Galeri24": URL_GALERI24,
     "StarGold": URL_STARGOLD,
@@ -77,23 +75,21 @@ URLS = {
     "HRTA": URL_HRTA,
     "IndoGold": URL_INDOGOLD,
 }
-
 st.caption(URLS[source])
-st.write("")
 
-# =========================
-# Main Action
-# =========================
+st.write("")  # spacer
+
 if st.button("Ambil data sekarang"):
     try:
-        # =====================
-        # PARSE PER SOURCE
-        # =====================
+        # =========================
+        # Fetch + Parse per source
+        # =========================
         if source == "IndoGold":
-            # IMPORTANT:
-            # IndoGold TIDAK pakai HTML
-            # langsung hit API JSON
-            df, update_label = parse_indogold()
+            # IndoGold: tetap fetch HTML untuk last_update + kemungkinan kebutuhan sesi/cookie,
+            # lalu scraper akan panggil API JSON (comparison_antamxubs)
+            url = URLS[source]
+            html = fetch_html(url)
+            df, update_label = parse_indogold(html)
 
         else:
             url = URLS[source]
@@ -111,44 +107,34 @@ if st.button("Ambil data sekarang"):
         st.subheader(update_label)
         st.success(f"Berhasil: {len(df)} baris")
 
-        # =====================
-        # GUARD: DF WAJIB VALID
-        # =====================
+        # Guard: DF harus valid
         if df.empty or "vendor" not in df.columns:
             st.warning("Data kosong atau struktur berubah.")
             st.stop()
 
-        # =====================
-        # Vendor Filter
-        # =====================
+        # vendor list
         vendors = sorted(df["vendor"].unique().tolist())
-        selected = st.sidebar.multiselect(
-            "Pilih Vendor", vendors, default=vendors
-        )
+        selected = st.sidebar.multiselect("Pilih Vendor", vendors, default=vendors)
 
-        # =====================
-        # Render Tables
-        # =====================
+        # render per vendor
         for v in selected:
             st.markdown(f"## Harga {v}")
             sub = df[df["vendor"] == v].copy()
 
+            # urutkan berat numeric
             if "weight_g" in sub.columns:
                 sub = sub.sort_values("weight_g")
 
             display = pd.DataFrame({
-                "Berat": sub["weight_g"].apply(
-                    lambda x: int(x) if float(x).is_integer() else x
-                ),
+                "Berat": sub["weight_g"].apply(lambda x: int(x) if float(x).is_integer() else x),
                 "Harga Jual": sub["sell_idr"].apply(format_rp),
                 "Harga Buyback": sub["buyback_idr"].apply(format_rp),
             })
-
             st.table(display)
 
-        # =====================
-        # DOWNLOAD CSV
-        # =====================
+        # =========================
+        # DOWNLOAD CSV (LONG)
+        # =========================
         csv = df.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
             "Download CSV (long)",
@@ -157,48 +143,40 @@ if st.button("Ambil data sekarang"):
             mime="text/csv",
         )
 
-        # =====================
+        # =========================
         # DOWNLOAD EXCEL
-        # =====================
+        # =========================
         output = BytesIO()
         used = set()
 
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            # sheet raw
             df.to_excel(writer, index=False, sheet_name="long")
             used.add("long")
 
+            # per vendor sheet
             for v in vendors:
                 sub = df[df["vendor"] == v].copy()
                 if "weight_g" in sub.columns:
                     sub = sub.sort_values("weight_g")
 
                 sub_out = pd.DataFrame({
-                    "Berat": sub["weight_g"].apply(
-                        lambda x: int(x) if float(x).is_integer() else x
-                    ),
+                    "Berat": sub["weight_g"].apply(lambda x: int(x) if float(x).is_integer() else x),
                     "Harga Jual": sub["sell_idr"].apply(format_rp),
                     "Harga Buyback": sub["buyback_idr"].apply(format_rp),
                 })
 
-                sub_out.to_excel(
-                    writer,
-                    index=False,
-                    sheet_name=safe_sheet_name(v, used),
-                )
+                sub_out.to_excel(writer, index=False, sheet_name=safe_sheet_name(v, used))
 
         st.download_button(
             "Download Excel (.xlsx)",
             data=output.getvalue(),
             file_name=f"{source.lower()}_harga_emas.xlsx",
-            mime=(
-                "application/vnd.openxmlformats-officedocument."
-                "spreadsheetml.sheet"
-            ),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
     except Exception as e:
         st.error("Gagal ambil data")
         st.exception(e)
-
 else:
     st.info("Pilih sumber di sidebar lalu klik **Ambil data sekarang**.")
