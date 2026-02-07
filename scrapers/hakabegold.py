@@ -1,11 +1,11 @@
-# scrapers/hakabegold.py
+import os
 import re
 from io import BytesIO
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 import pandas as pd
 
-URL_HAKABEGOLD = "https://www.logammuliahk.com/#work"  # untuk caption UI
+URL_HAKABEGOLD = "https://www.logammuliahk.com/#work"
 
 
 def _idr(text: str) -> int:
@@ -24,28 +24,22 @@ def _float(x) -> float:
 
 
 def _extract_date(text: str) -> str | None:
+    # contoh: 07 February 2026
     m = re.search(r"\b(\d{1,2}\s+[A-Za-z]+\s+\d{4})\b", text or "")
-    return m.group(1) if m else None
+    return m.group(1).strip() if m else None
 
 
 def _to_direct_download(url: str) -> str:
-    """
-    Convert common OneDrive share URLs into direct download attempts.
-    Works only if the file is publicly accessible.
-    """
+    """Make best-effort OneDrive URLs into direct download."""
     if not url:
         return url
-
     u = url.strip()
 
-    # 1drv.ms short share links: append download=1
     if "1drv.ms" in u:
         if "download=1" not in u:
-            sep = "&" if "?" in u else "?"
-            u = f"{u}{sep}download=1"
+            u += ("&" if "?" in u else "?") + "download=1"
         return u
 
-    # onedrive.live.com: ensure download=1
     if "onedrive.live.com" in u:
         parsed = urlparse(u)
         q = parse_qs(parsed.query)
@@ -54,24 +48,25 @@ def _to_direct_download(url: str) -> str:
         new_q = urlencode(q, doseq=True)
         return urlunparse(parsed._replace(query=new_q))
 
-    # raw xlsx link: keep
     return u
 
 
 def _find_candidate_excel_links(html: str) -> list[str]:
-    """
-    Scan HTML for any onedrive/1drv/ms/xlsx URL.
-    """
+    """Scan HTML for any excel/onedrive/xlsx/download.aspx URLs."""
     if not html:
         return []
 
-    # include urls inside quotes or plain
     urls = re.findall(r"https?://[^\s\"'>]+", html)
 
     cands = []
     for u in urls:
         ul = u.lower()
-        if any(k in ul for k in ["1drv.ms", "onedrive.live.com"]) or ul.endswith(".xlsx"):
+        if (
+            ul.endswith(".xlsx")
+            or "1drv.ms" in ul
+            or "onedrive.live.com" in ul
+            or "download.aspx?uniqueid=" in ul
+        ):
             cands.append(u)
 
     # de-dup preserve order
@@ -84,89 +79,123 @@ def _find_candidate_excel_links(html: str) -> list[str]:
     return out
 
 
-def _download_bytes(session, url: str) -> bytes | None:
+def _download_bytes(url: str) -> tuple[bytes | None, str | None]:
     """
-    Try download bytes; return None if blocked.
+    Download content. Return (bytes, error_reason).
+    Reject HTML login pages.
     """
+    import requests
+
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
     }
-    r = session.get(url, headers=headers, timeout=30, allow_redirects=True)
+    try:
+        r = requests.get(url, headers=headers, timeout=45, allow_redirects=True)
+    except Exception as e:
+        return None, f"request error: {e}"
+
     if r.status_code != 200:
-        return None
+        return None, f"HTTP {r.status_code}"
 
     ctype = (r.headers.get("content-type") or "").lower()
-    # sometimes OneDrive returns html login page; reject
-    if "text/html" in ctype and b"<html" in (r.content[:200].lower()):
-        return None
+    head = (r.content[:400] or b"").lower()
 
-    return r.content
+    # if it returns HTML, likely login/blocked
+    if "text/html" in ctype or b"<html" in head:
+        return None, "returned HTML (login/blocked)"
+
+    return r.content, None
 
 
-def _parse_excel(content: bytes):
+def _parse_excel(content: bytes) -> tuple[pd.DataFrame, str]:
     """
-    Parse XLSX bytes. Find table row containing header 'Berat' & 'Harga End User'.
-    Return standardized df (vendor, weight_g, sell_idr, buyback_idr).
+    Parse XLSX and find table containing 'Berat' + 'Harga End User'.
+    Standardize output: vendor, weight_g, sell_idr, buyback_idr
     """
     xls = pd.ExcelFile(BytesIO(content))
-    # read all sheets as raw (header=None)
-    best = None
+
+    best_raw = None
     best_sheet = None
+    header_row = None
 
     for sh in xls.sheet_names:
-        df_raw = pd.read_excel(xls, sheet_name=sh, header=None, dtype=str)
-        # find row index containing 'Berat' and 'Harga End User'
-        for i in range(min(len(df_raw), 200)):  # limit scan
-            row = " ".join([str(x) for x in df_raw.iloc[i].tolist() if x and str(x) != "nan"]).lower()
-            if "berat" in row and "harga end user" in row:
-                best = df_raw
+        df_raw = pd.read_excel(xls, sheet_name=sh, header=None)
+        # scan first N rows to find header row
+        for i in range(min(len(df_raw), 250)):
+            row_vals = df_raw.iloc[i].tolist()
+            row_text = " ".join([str(x) for x in row_vals if pd.notna(x)]).lower()
+            if ("berat" in row_text) and ("harga end user" in row_text or "harga end-user" in row_text):
+                best_raw = df_raw
                 best_sheet = sh
                 header_row = i
                 break
-        if best is not None:
+        if best_raw is not None:
             break
 
-    if best is None:
-        return pd.DataFrame(columns=["vendor", "weight_g", "sell_idr", "buyback_idr"]), "HK Logam Mulia — XLSX ditemukan tapi format tidak dikenali"
+    if best_raw is None:
+        return (
+            pd.DataFrame(columns=["vendor", "weight_g", "sell_idr", "buyback_idr"]),
+            "HK Logam Mulia — XLSX format tidak dikenali",
+        )
 
-    # map columns by header row cell text
-    headers = [str(x).strip().lower() if x and str(x) != "nan" else "" for x in best.iloc[header_row].tolist()]
+    headers = [
+        str(x).strip().lower() if pd.notna(x) else ""
+        for x in best_raw.iloc[header_row].tolist()
+    ]
 
-    def col_idx(keyword: str) -> int | None:
+    def find_col(*keys: str) -> int | None:
         for idx, h in enumerate(headers):
-            if keyword in h:
+            if not h:
+                continue
+            if all(k in h for k in keys):
                 return idx
         return None
 
-    c_berat = col_idx("berat")
-    c_end_user = col_idx("harga end user")
-    c_buyback = None  # buyback biasanya di bawah tabel, bukan kolom
+    c_berat = find_col("berat")
+    # kolom yang paling aman: "Harga End User" (total)
+    c_sell = None
+    for key in ["harga end user", "harga end-user"]:
+        for idx, h in enumerate(headers):
+            if key in h:
+                c_sell = idx
+                break
+        if c_sell is not None:
+            break
 
-    # data starts after header_row
-    data = best.iloc[header_row + 1:].copy()
+    if c_berat is None or c_sell is None:
+        return (
+            pd.DataFrame(columns=["vendor", "weight_g", "sell_idr", "buyback_idr"]),
+            "HK Logam Mulia — XLSX header tidak lengkap",
+        )
+
+    data = best_raw.iloc[header_row + 1 :].copy()
+
     rows = []
-
     for _, r in data.iterrows():
-        if c_berat is None or c_end_user is None:
-            continue
-
         w = _float(r.iloc[c_berat])
-        sell = _idr(r.iloc[c_end_user])
-
+        sell = _idr(r.iloc[c_sell])
         if w <= 0 or sell <= 0:
             continue
-
-        rows.append({"vendor": "HK Logam Mulia", "weight_g": w, "sell_idr": sell, "buyback_idr": 0})
+        rows.append(
+            {
+                "vendor": "HK Logam Mulia",
+                "weight_g": float(w),
+                "sell_idr": int(sell),
+                "buyback_idr": 0,
+            }
+        )
 
     out = pd.DataFrame(rows)
 
-    # try to find buyback per gram from anywhere in sheet text
+    # Try to find "Buyback ... Rp ... /gram" anywhere in sheet text
     buyback_per_gram = 0
-    flat_text = " ".join(best.fillna("").astype(str).values.flatten().tolist())
-    m = re.search(r"buyback.*?rp\s*([0-9\.,]+)\s*/\s*gram", flat_text, flags=re.I)
+    flat_text = " ".join(
+        best_raw.fillna("").astype(str).values.flatten().tolist()
+    )
+    m = re.search(r"buyback.*?rp\s*([0-9\.,]+)\s*/\s*gram", flat_text, flags=re.I | re.S)
     if m:
         buyback_per_gram = _idr(m.group(1))
 
@@ -184,30 +213,41 @@ def _parse_excel(content: bytes):
 
 def parse_hakabegold(html: str):
     """
-    Primary strategy:
-    - Find public Excel link in HTML (1drv/onedrive)
-    - Download xlsx (must be public)
-    - Parse xlsx into standardized df
+    Priority:
+    1) Use env/secrets: HAKABEGOLD_DOWNLOAD_URL (tempauth downloadUrl)
+    2) Else try to find any xlsx / onedrive link inside HTML
     """
-    import requests
+    # 1) Use direct downloadUrl from env (best)
+    dl_env = os.getenv("HAKABEGOLD_DOWNLOAD_URL", "").strip()
 
-    text = re.sub(r"<[^>]+>", " ", html or "")
-    date_str = _extract_date(text)
+    text_only = re.sub(r"<[^>]+>", " ", html or "")
+    date_str = _extract_date(text_only)
 
-    session = requests.Session()
+    if dl_env:
+        content, err = _download_bytes(dl_env)
+        if content:
+            df, label = _parse_excel(content)
+            if date_str:
+                label = f"HK Logam Mulia — {date_str} — {label}"
+            return df, label
+        # env exists but failed
+        label = f"HK Logam Mulia — downloadUrl env gagal ({err})"
+        if date_str:
+            label = f"HK Logam Mulia — {date_str} — downloadUrl env gagal ({err})"
+        return pd.DataFrame(columns=["vendor", "weight_g", "sell_idr", "buyback_idr"]), label
+
+    # 2) fallback: scan html
     links = _find_candidate_excel_links(html or "")
-    # try each link in order
     for u in links:
         dl = _to_direct_download(u)
-        content = _download_bytes(session, dl)
+        content, err = _download_bytes(dl)
         if content:
             df, label = _parse_excel(content)
             if date_str:
                 label = f"HK Logam Mulia — {date_str} — {label}"
             return df, label
 
-    # if no links or cannot download -> empty with clear reason
-    label = "HK Logam Mulia — XLSX tidak bisa diunduh (butuh link publik)"
+    label = "HK Logam Mulia — XLSX tidak ditemukan di HTML (butuh HAKABEGOLD_DOWNLOAD_URL)"
     if date_str:
-        label = f"HK Logam Mulia — {date_str} — XLSX tidak bisa diunduh (butuh link publik)"
+        label = f"HK Logam Mulia — {date_str} — XLSX tidak ditemukan di HTML (butuh HAKABEGOLD_DOWNLOAD_URL)"
     return pd.DataFrame(columns=["vendor", "weight_g", "sell_idr", "buyback_idr"]), label
