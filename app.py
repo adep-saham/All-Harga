@@ -10,15 +10,6 @@ from scrapers.anekalogam import parse_anekalogam, URL_ANEKALOGAM
 from scrapers.hrta import parse_hrta, URL_HRTA
 from scrapers.indogold import parse_indogold, URL_INDOGOLD
 
-# ✅ tambah HK Logam Mulia
-from scrapers.hakabegold import parse_hakabegold, URL_HAKABEGOLD
-import os
-# Otomatis install browser playwright jika belum ada
-try:
-    import playwright
-except ImportError:
-    os.system("pip install playwright")
-    os.system("playwright install chromium")
 
 # =========================
 # Helpers UI/Download
