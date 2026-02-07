@@ -5,11 +5,16 @@ from bs4 import BeautifulSoup
 
 URL_INDOGOLD = "https://www.indogold.id/harga-emas-hari-ini"
 
+# Threshold untuk membedakan EMAS vs PERAK berdasarkan harga/gram.
+# Emas ~ 2–4 juta/gram, perak jauh lebih kecil.
+MIN_GOLD_IDR_PER_GRAM = 500_000
+
 
 # =========================
 # Helpers
 # =========================
 def _idr(x: str) -> int:
+    """Parse 'Rp. 1.234.567' -> 1234567"""
     if not x:
         return 0
     digits = re.sub(r"[^\d]", "", x)
@@ -17,7 +22,7 @@ def _idr(x: str) -> int:
 
 
 def _gram(x: str) -> float:
-    # "0.5 Gram" / "0,25 Gram" / "1.00 Gram"
+    """Parse '0.5 Gram' / '0,25 Gram' / '1.00 Gram' -> float gram"""
     s = (x or "").replace(",", ".")
     m = re.search(r"(\d+(?:\.\d+)?)", s)
     return float(m.group(1)) if m else 0.0
@@ -47,9 +52,20 @@ def _table_rows(table) -> list[list[str]]:
     return rows
 
 
-def _valid_gold_weight(w: float) -> bool:
-    # emas logis: >0 dan <=150 gram
-    return (w > 0) and (w <= 150)
+def _is_gold_table_by_ratio(sample_rows: list[tuple[float, int]]) -> bool:
+    """
+    sample_rows: list of (weight_g, sell_idr)
+    Hitung median sell_idr/weight_g untuk membedakan emas vs perak.
+    """
+    ratios = []
+    for w, sell in sample_rows:
+        if w > 0 and sell > 0:
+            ratios.append(sell / w)
+    if len(ratios) < 2:
+        return False
+    ratios.sort()
+    med = ratios[len(ratios) // 2]
+    return med >= MIN_GOLD_IDR_PER_GRAM
 
 
 # =========================
@@ -63,11 +79,11 @@ def parse_indogold(html: str):
       - sell_idr      (Harga Beli)
       - buyback_idr   (Harga Jual / Buyback)
 
-    Vendor:
-      - Perbandingan - UBS
-      - Perbandingan - Antam
-      - UBS
-      - Antam
+    Vendor output (rapi):
+      - "Perbandingan - UBS"
+      - "Perbandingan - Antam"
+      - "UBS"
+      - "Antam"
     """
     soup = BeautifulSoup(html, "html.parser")
     full_text = soup.get_text(" ", strip=True)
@@ -84,16 +100,21 @@ def parse_indogold(html: str):
         h = [_norm(x) for x in header]
         htxt = " | ".join(h)
 
-        # kumpulkan berat dulu → skip tabel non-emas (perak, dll)
-        weights = []
+        # kumpulkan sample rasio harga/gram dari baris tabel
+        # - untuk tabel compare: harga jual/buyback tidak ada, tapi ada "harga beli" utk UBS & Antam
+        # - untuk tabel UBS/Antam: ada harga beli jelas
+        sample = []
         for r in rows[1:]:
-            if len(r) >= 1:
-                weights.append(_gram(r[0]))
-
-        if not any(_valid_gold_weight(w) for w in weights):
+            if len(r) < 2:
+                continue
+            w = _gram(r[0])
+            # ambil harga dari kolom ke-2 sebagai proxy (biasanya "Harga Beli")
+            sell_proxy = _idr(r[1])
+            if w > 0 and sell_proxy > 0:
+                sample.append((w, sell_proxy))
+        # skip tabel non-emas (perak/yang lain)
+        if not _is_gold_table_by_ratio(sample):
             continue
-        if any(w > 150 for w in weights):
-            continue  # buang perak (500g, dst)
 
         # =========================
         # A) PERBANDINGAN
@@ -112,9 +133,8 @@ def parse_indogold(html: str):
                 for r in rows[1:]:
                     if len(r) <= max(ubs_idx, antam_idx):
                         continue
-
                     w = _gram(r[0])
-                    if not _valid_gold_weight(w):
+                    if w <= 0:
                         continue
 
                     ubs_buy = _idr(r[ubs_idx])
@@ -127,7 +147,6 @@ def parse_indogold(html: str):
                             "sell_idr": ubs_buy,
                             "buyback_idr": 0,
                         })
-
                     if antam_buy:
                         rows_out.append({
                             "vendor": "Perbandingan - Antam",
@@ -145,14 +164,11 @@ def parse_indogold(html: str):
             for r in rows[1:]:
                 if len(r) < 3:
                     continue
-
                 w = _gram(r[0])
-                if not _valid_gold_weight(w):
+                if w <= 0:
                     continue
-
                 buy = _idr(r[1])
                 bb = _idr(r[2])
-
                 if buy or bb:
                     rows_out.append({
                         "vendor": "UBS",
@@ -170,14 +186,11 @@ def parse_indogold(html: str):
             for r in rows[1:]:
                 if len(r) < 3:
                     continue
-
                 w = _gram(r[0])
-                if not _valid_gold_weight(w):
+                if w <= 0:
                     continue
-
                 buy_2026 = _idr(r[1])
                 bb_2026 = _idr(r[2])
-
                 if buy_2026 or bb_2026:
                     rows_out.append({
                         "vendor": "Antam",
