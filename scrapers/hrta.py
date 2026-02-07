@@ -1,11 +1,11 @@
-import re
-from datetime import datetime
 import pandas as pd
-from bs4 import BeautifulSoup
+import requests
+from datetime import datetime
 
 URL_HRTA = "https://hrtagold.id/en/gold-price"
+API_HRTA_DAILY = "https://hrtagold.id/api/v1/brandings/price/daily"
 
-WEIGHT_ORDER = [0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 25, 50, 100, 250, 500, 1000]
+WEIGHT_ORDER = [0.1, 0.25, 0.5, 1, 2, 3, 4, 5, 10, 25, 50, 100, 150, 175, 200, 250, 500, 1000]
 WEIGHT_RANK = {w: i for i, w in enumerate(WEIGHT_ORDER)}
 
 def weight_sort_key(w: float):
@@ -13,158 +13,140 @@ def weight_sort_key(w: float):
         return (0, WEIGHT_RANK[w])
     return (1, w)
 
-def normalize_spaces(s: str) -> str:
-    return re.sub(r"\s+", " ", str(s)).strip()
-
-def money_to_int(s: str) -> int:
-    """
-    Tolerant parser:
-    - remove currency words/symbols
-    - keep digits only
-    """
-    s = str(s)
-    # common currency tokens
-    s = s.replace("IDR", "").replace("Rp", "").replace("rp", "")
-    s = s.replace(",", "").replace(".", "").replace(" ", "").strip()
-    s = re.sub(r"[^\d]", "", s)
-    return int(s) if s.isdigit() else 0
-
-def parse_update_label(text: str) -> str:
-    # HRTA page may not have a clear "last update"; we use snapshot time.
-    return f"Snapshot {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-
-def _try_parse_tables(soup: BeautifulSoup):
-    """
-    Try to parse from HTML tables by detecting headers:
-    weight/gram + sell + buy/buyback
-    """
-    tables = soup.find_all("table")
-    if not tables:
+def _to_float_weight(x):
+    try:
+        return float(str(x).replace(",", ".").strip())
+    except Exception:
         return None
 
-    def norm(h):  # normalize header string
-        return normalize_spaces(h).lower()
+def _to_int_money(x):
+    # API biasanya sudah numeric; tapi kita buat tolerant
+    try:
+        if x is None:
+            return 0
+        if isinstance(x, (int, float)):
+            return int(x)
+        s = str(x)
+        s = s.replace("Rp", "").replace("IDR", "").replace(" ", "").strip()
+        s = s.replace(".", "").replace(",", "")
+        return int(s) if s.isdigit() else 0
+    except Exception:
+        return 0
 
-    for t in tables:
-        # get headers
-        ths = t.find_all("th")
-        if not ths:
-            # sometimes header is in first row td
-            first_tr = t.find("tr")
-            if first_tr:
-                ths = first_tr.find_all(["th", "td"])
-        headers = [norm(th.get_text(" ", strip=True)) for th in ths]
-        if not headers:
-            continue
+def fetch_hrta_daily_json() -> dict:
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "referer": URL_HRTA,
+        "user-agent": "Mozilla/5.0",
+        "cache-control": "no-cache",
+        "pragma": "no-cache",
+    }
+    r = requests.get(API_HRTA_DAILY, headers=headers, timeout=30)
+    r.raise_for_status()
+    return r.json()
 
-        # detect columns
-        # weight column
-        w_idx = None
-        for i, h in enumerate(headers):
-            if "weight" in h or "gram" in h or "g)" in h or "g " in h:
-                w_idx = i
-                break
+def _extract_rows(obj) -> list[dict]:
+    """
+    HRTA API schema bisa berubah. Kita buat extractor yang fleksibel:
+    - cari list item yang punya weight/gram + sell/buyback fields
+    - handle beberapa kemungkinan key
+    """
+    candidates = []
 
-        # sell column
-        sell_idx = None
-        for i, h in enumerate(headers):
-            if "sell" in h or "selling" in h or "price" in h:
-                sell_idx = i
-                break
+    # helper: walk dict/list, kumpulkan list yang isinya dict
+    def walk(x):
+        if isinstance(x, dict):
+            for v in x.values():
+                walk(v)
+        elif isinstance(x, list):
+            # list of dict?
+            if x and all(isinstance(i, dict) for i in x):
+                candidates.append(x)
+            for i in x:
+                walk(i)
 
-        # buy/buyback column
-        buy_idx = None
-        for i, h in enumerate(headers):
-            if "buyback" in h or "buy back" in h or "buy" in h:
-                buy_idx = i
-                break
+    walk(obj)
 
-        if w_idx is None or sell_idx is None:
-            continue  # not our price table
+    # pilih kandidat list yang paling "harga-like"
+    best = None
+    best_score = -1
 
-        # rows
-        rows = []
-        trs = t.find_all("tr")
-        for tr in trs[1:]:
-            tds = tr.find_all(["td", "th"])
-            if not tds:
-                continue
-            cells = [normalize_spaces(td.get_text(" ", strip=True)) for td in tds]
+    def score_list(lst):
+        keys = set()
+        for it in lst[:10]:
+            keys |= set(it.keys())
+        # weight keys
+        w_keys = {"weight", "gram", "grams", "size", "berat", "weight_g", "weightGram"}
+        s_keys = {"sell", "sell_price", "selling", "sellingPrice", "priceSell", "harga_jual", "sellIdr"}
+        b_keys = {"buy", "buyback", "buy_back", "buyBack", "buyback_price", "harga_buyback", "harga_beli", "buyIdr"}
+        score = 0
+        score += 3 if keys & w_keys else 0
+        score += 3 if keys & s_keys else 0
+        score += 2 if keys & b_keys else 0
+        return score
 
-            if w_idx >= len(cells) or sell_idx >= len(cells):
-                continue
+    for lst in candidates:
+        sc = score_list(lst)
+        if sc > best_score:
+            best_score = sc
+            best = lst
 
-            w_txt = cells[w_idx]
-            # weight examples: "1 g", "1gr", "1 gram"
-            m = re.search(r"(\d+(?:\.\d+)?)", w_txt.replace(",", "."))
-            if not m:
-                continue
-            w = float(m.group(1))
-            if not (0.1 <= w <= 1000):
-                continue
+    if not best or best_score < 3:
+        return []
 
-            sell = money_to_int(cells[sell_idx])
-            buyb = money_to_int(cells[buy_idx]) if (buy_idx is not None and buy_idx < len(cells)) else 0
-
-            rows.append((w, sell, buyb))
-
-        if rows:
-            return rows
-
-    return None
-
-def parse_hrta(html: str) -> tuple[pd.DataFrame, str]:
-    soup = BeautifulSoup(html, "html.parser")
-    text = normalize_spaces(soup.get_text(" ", strip=True))
-    update_label = parse_update_label(text)
+    # map field guesser
+    def pick(it, options):
+        for k in options:
+            if k in it:
+                return it.get(k)
+        return None
 
     rows = []
+    for it in best:
+        w = pick(it, ["weight", "gram", "grams", "size", "berat", "weight_g", "weightGram"])
+        sell = pick(it, ["sell", "sell_price", "selling", "sellingPrice", "priceSell", "harga_jual", "sellIdr", "price"])
+        buyb = pick(it, ["buyback", "buy_back", "buyBack", "buy", "buyback_price", "harga_buyback", "harga_beli", "buyIdr"])
 
-    # 1) table-first
-    table_rows = _try_parse_tables(soup)
-    if table_rows:
-        for w, sell, buyb in table_rows:
-            rows.append({
-                "snapshot_ts": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-                "update_label": update_label,
-                "source_site": "hrta",
-                "vendor": "HRTA",
-                "weight_g": float(w),
-                "sell_idr": int(sell),
-                "buyback_idr": int(buyb),
-                "source_url": URL_HRTA,
-            })
+        w = _to_float_weight(w)
+        if w is None or not (0.1 <= w <= 1000):
+            continue
 
-    # 2) fallback regex (if no table)
+        rows.append({
+            "weight_g": w,
+            "sell_idr": _to_int_money(sell),
+            "buyback_idr": _to_int_money(buyb),
+        })
+
+    return rows
+
+def parse_hrta(_: str = "") -> tuple[pd.DataFrame, str]:
+    """
+    signature dibuat kompatibel dengan app kamu: parse_hrta(html)
+    tapi kita tidak pakai html, langsung API.
+    """
+    data = fetch_hrta_daily_json()
+
+    rows = _extract_rows(data)
     if not rows:
-        # capture patterns like: "1 g ... Rp 1.234.000 ... Rp 1.100.000"
-        # tolerate IDR, Rp, separators
-        pair = re.compile(
-            r"(\d+(?:\.\d+)?)\s*(?:g|gr|gram)\s+.*?(?:Rp|IDR)\s*([\d\.,]+)\s+.*?(?:Rp|IDR)\s*([\d\.,]+)",
-            re.IGNORECASE,
-        )
-        for w_raw, sell_raw, buy_raw in pair.findall(text):
-            w = float(w_raw.replace(",", "."))
-            if not (0.1 <= w <= 1000):
-                continue
-            rows.append({
-                "snapshot_ts": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-                "update_label": update_label,
-                "source_site": "hrta",
-                "vendor": "HRTA",
-                "weight_g": w,
-                "sell_idr": money_to_int("Rp" + sell_raw),
-                "buyback_idr": money_to_int("Rp" + buy_raw),
-                "source_url": URL_HRTA,
-            })
+        # fallback: kalau API ternyata bungkusnya beda, simpan sedikit preview keys
+        top_keys = list(data.keys()) if isinstance(data, dict) else type(data).__name__
+        raise RuntimeError(f"HRTA API: tidak menemukan list harga. Top keys: {top_keys}")
 
-    if not rows:
-        raise RuntimeError("HRTA: tidak menemukan tabel/pola harga. Struktur halaman mungkin berubah.")
+    update_label = f"HRTA Daily Price (API) - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
-    df = pd.DataFrame(rows).drop_duplicates(subset=["update_label", "weight_g", "sell_idr", "buyback_idr"])
+    df = pd.DataFrame(rows)
+    df["snapshot_ts"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    df["update_label"] = update_label
+    df["source_site"] = "hrta"
+    df["vendor"] = "HRTA"
+    df["source_url"] = URL_HRTA
 
+    # sort weight (urutan preferensi lalu numeric)
     df["__w0"] = df["weight_g"].map(lambda x: weight_sort_key(float(x))[0])
     df["__w1"] = df["weight_g"].map(lambda x: weight_sort_key(float(x))[1])
     df = df.sort_values(["__w0", "__w1"]).drop(columns=["__w0", "__w1"])
+
+    # rapikan kolom urutan umum
+    df = df[["snapshot_ts", "update_label", "source_site", "vendor", "weight_g", "sell_idr", "buyback_idr", "source_url"]]
 
     return df, update_label
