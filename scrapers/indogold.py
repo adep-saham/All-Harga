@@ -12,6 +12,7 @@ STD_COLS = ["vendor", "weight_g", "sell_idr", "buyback_idr"]
 
 UA = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
@@ -35,7 +36,12 @@ def _find_last_update(text: str) -> str | None:
 
 
 def _extract_token(page_html: str) -> str | None:
-    # token biasanya ada di HTML/JS
+    """
+    Token bisa muncul sebagai:
+      - <input name="simulasi-token" value="...">
+      - "simulasi-token":"..."
+      - simulasi-token='...'
+    """
     patterns = [
         r'name="simulasi-token"\s*value="([a-f0-9]{16,64})"',
         r'"simulasi-token"\s*:\s*"([a-f0-9]{16,64})"',
@@ -70,39 +76,53 @@ def _post_pricelist(session: requests.Session, token: str, product_key: str) -> 
     return r.json()
 
 
-def parse_indogold(_html_unused: str):
+def parse_indogold(html: str):
     """
     IndoGold via API JSON comparison_antamxubs.
+    Input `html` dari app.py (fetch_html) dipakai untuk ambil token (PENTING).
     Output vendor:
       - Perbandingan - UBS
       - Perbandingan - Antam
       - UBS
       - Antam
-    Kolom:
-      vendor, weight_g, sell_idr, buyback_idr
     """
     empty_df = pd.DataFrame(columns=STD_COLS)
 
-    # 1) buka halaman untuk dapat cookies + token + last update
-    s = requests.Session()
+    # 1) ambil last_update & token dari HTML yang dikirim app.py dulu
+    last_update = None
     try:
-        page = s.get(URL_INDOGOLD, headers=UA, timeout=30)
-        page.raise_for_status()
-        page_html = page.text
+        soup = BeautifulSoup(html or "", "html.parser")
+        last_update = _find_last_update(soup.get_text(" ", strip=True))
     except Exception:
-        return empty_df, "IndoGold — gagal akses halaman"
+        last_update = None
 
-    soup = BeautifulSoup(page_html, "html.parser")
-    last_update = _find_last_update(soup.get_text(" ", strip=True))
-    token = _extract_token(page_html)
+    token = _extract_token(html or "")
 
+    # 2) siapkan session + cookies
+    s = requests.Session()
+
+    # Kalau token tidak ketemu dari html app, fallback GET ulang (kadang perlu untuk cookies)
+    page_html = html or ""
     if not token:
-        label = "IndoGold — token tidak ditemukan (format berubah)"
+        try:
+            page = s.get(URL_INDOGOLD, headers=UA, timeout=30)
+            page.raise_for_status()
+            page_html = page.text
+            if not last_update:
+                soup2 = BeautifulSoup(page_html, "html.parser")
+                last_update = _find_last_update(soup2.get_text(" ", strip=True))
+            token = _extract_token(page_html)
+        except Exception:
+            pass
+
+    # kalau masih tidak ada token, stop dengan label yang jelas
+    if not token:
+        label = "IndoGold — token tidak ditemukan"
         if last_update:
             label = f"IndoGold — token tidak ditemukan — Last Update: {last_update}"
         return empty_df, label
 
-    # 2) panggil API: perbandingan UBS vs Antam
+    # 3) panggil API: perbandingan UBS vs Antam
     try:
         payload = _post_pricelist(s, token=token, product_key="comparison_antamxubs")
     except Exception:
@@ -111,15 +131,9 @@ def parse_indogold(_html_unused: str):
             label = f"IndoGold — API gagal — Last Update: {last_update}"
         return empty_df, label
 
-    # 3) parse JSON sesuai contoh user
-    # payload["data"]["data_denom"] -> dict: denom_str -> {"Antam":{harga,harga_buyback}, "UBS":{...}}
-    try:
-        data = payload.get("data", {})
-        denom_map = data.get("data_denom", {})
-        variants = data.get("list_variant", ["UBS", "Antam"])
-    except Exception:
-        denom_map = {}
-        variants = ["UBS", "Antam"]
+    data = payload.get("data", {}) if isinstance(payload, dict) else {}
+    denom_map = data.get("data_denom", {}) if isinstance(data, dict) else {}
+    variants = data.get("list_variant", ["UBS", "Antam"]) if isinstance(data, dict) else ["UBS", "Antam"]
 
     if not denom_map:
         label = "IndoGold — data_denom kosong"
@@ -134,14 +148,12 @@ def parse_indogold(_html_unused: str):
         except Exception:
             continue
 
-        # build untuk UBS dan Antam kalau ada
         for brand in variants:
             obj = (vmap or {}).get(brand) or {}
             sell = _idr(obj.get("harga", ""))
             bb = _idr(obj.get("harga_buyback", ""))
 
             if sell or bb:
-                # output 4 vendor: perbandingan + brand utama
                 if brand == "UBS":
                     rows.append({"vendor": "Perbandingan - UBS", "weight_g": w, "sell_idr": sell, "buyback_idr": bb})
                     rows.append({"vendor": "UBS", "weight_g": w, "sell_idr": sell, "buyback_idr": bb})
@@ -150,6 +162,12 @@ def parse_indogold(_html_unused: str):
                     rows.append({"vendor": "Antam", "weight_g": w, "sell_idr": sell, "buyback_idr": bb})
 
     df = pd.DataFrame(rows, columns=STD_COLS)
+
+    if df.empty:
+        label = "IndoGold — hasil parsing kosong"
+        if last_update:
+            label = f"IndoGold — hasil parsing kosong — Last Update: {last_update}"
+        return empty_df, label
 
     # dedup vendor+weight (ambil max)
     df["weight_g"] = pd.to_numeric(df["weight_g"], errors="coerce").fillna(0.0)
