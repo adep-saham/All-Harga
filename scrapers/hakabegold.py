@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from io import BytesIO
 from typing import Tuple, Optional
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs
 
 import pandas as pd
 import requests
@@ -12,14 +12,13 @@ import requests
 
 URL_HAKABEGOLD = "https://www.logammuliahk.com/#work"
 
-# Pakai link 1drv.ms terbaru kamu
+# Link share OneDrive (boleh kamu ganti kalau berubah)
 HAKABEGOLD_SHARE_URL = "https://1drv.ms/x/c/7181a7df3eab3581/IQAdDl52fuvfQqpHMQUXarpPAQjSrmRAdGBYh6zQE5QIlF8?e=HhTNvT"
 
 
 # =========================
 # Helpers
 # =========================
-
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
@@ -64,40 +63,23 @@ def _extract_resid_authkey_from_url(u: str) -> tuple[Optional[str], Optional[str
 
 
 def _build_public_download(resid: str, authkey: str) -> str:
-    # ini endpoint download publik paling “stabil”
     return f"https://onedrive.live.com/download?resid={resid}&authkey={authkey}"
 
 
 def _find_download_link_in_html(html: str) -> Optional[str]:
-    """
-    Cari link download yang disisipkan di HTML/JS.
-    Pola yang umum:
-      - https://onedrive.live.com/download?resid=...&authkey=...
-      - https://onedrive.live.com/download.aspx?... (kadang)
-      - string ber-escape seperti https:\/\/onedrive.live.com\/download?resid=...
-    """
     if not html:
         return None
 
-    # unescape minimal
-    h = html.replace("\\u0026", "&")
-    h = h.replace("\\/", "/")
+    h = html.replace("\\u0026", "&").replace("\\/", "/")
 
-    # 1) langsung cari download?resid=...&authkey=...
     m = re.search(r"(https://onedrive\.live\.com/download\?resid=[A-Za-z0-9!]+&authkey=[A-Za-z0-9\-_]+)", h)
     if m:
         return m.group(1)
 
-    # 2) cari resid & authkey di dalam HTML (JS config)
     m_resid = re.search(r"resid=([A-Za-z0-9!]+)", h)
     m_auth = re.search(r"authkey=([A-Za-z0-9\-_]+)", h)
     if m_resid and m_auth:
         return _build_public_download(m_resid.group(1), m_auth.group(1))
-
-    # 3) kadang ada download.aspx?UniqueId=...&tempauth=...
-    m2 = re.search(r"(https://my\.microsoftpersonalcontent\.com/[^\"'\s]+download\.aspx\?[^\"'\s]+)", h)
-    if m2:
-        return m2.group(1)
 
     return None
 
@@ -105,17 +87,14 @@ def _find_download_link_in_html(html: str) -> Optional[str]:
 def _download_xlsx_from_share(share_url: str) -> bytes:
     s = _session()
 
-    # Step A: resolve redirect chain (browser-like)
     r = s.get(share_url, timeout=60, allow_redirects=True, headers={"Referer": "https://onedrive.live.com/"})
     r.raise_for_status()
 
-    # Kalau sudah langsung file -> OK
     if not _is_html_response(r):
         return r.content
 
     final_url = r.url
 
-    # Step B: coba pakai resid/authkey dari URL final
     resid, authkey = _extract_resid_authkey_from_url(final_url)
     if resid and authkey:
         dl = _build_public_download(resid, authkey)
@@ -124,7 +103,6 @@ def _download_xlsx_from_share(share_url: str) -> bytes:
         if not _is_html_response(r2):
             return r2.content
 
-    # Step C: ekstrak download link dari HTML viewer
     dl2 = _find_download_link_in_html(r.text or "")
     if dl2:
         r3 = s.get(dl2, timeout=60, allow_redirects=True, headers={"Referer": "https://onedrive.live.com/"})
@@ -132,7 +110,6 @@ def _download_xlsx_from_share(share_url: str) -> bytes:
         if not _is_html_response(r3):
             return r3.content
 
-    # Step D (last resort): add download=1 ke final_url
     joiner = "&" if "?" in final_url else "?"
     r4 = s.get(final_url + joiner + "download=1", timeout=60, allow_redirects=True,
               headers={"Referer": "https://onedrive.live.com/"})
@@ -140,7 +117,7 @@ def _download_xlsx_from_share(share_url: str) -> bytes:
     if not _is_html_response(r4):
         return r4.content
 
-    raise RuntimeError("OneDrive masih mengembalikan HTML (bukan XLSX). Link share kemungkinan tidak benar-benar public untuk server Streamlit / diblok anti-bot.")
+    raise RuntimeError("OneDrive mengembalikan HTML (bukan XLSX). Link share kemungkinan tidak public-downloadable untuk server Streamlit.")
 
 
 def _extract_date_from_raw(df: pd.DataFrame) -> Optional[str]:
@@ -152,7 +129,7 @@ def _extract_date_from_raw(df: pd.DataFrame) -> Optional[str]:
     return None
 
 
-def _ explain_buyback_per_gram(df: pd.DataFrame) -> int:
+def _extract_buyback_per_gram(df: pd.DataFrame) -> int:
     text = " ".join(df.astype(str).fillna("").values.ravel())
     m = re.search(r"Buyback.*?Rp\.?\s*([\d\.,]+)\s*/?\s*gram", text, flags=re.I)
     return _idr_to_int(m.group(1)) if m else 0
@@ -161,7 +138,6 @@ def _ explain_buyback_per_gram(df: pd.DataFrame) -> int:
 # =========================
 # Main parser
 # =========================
-
 def parse_hakabegold(_: str = "") -> Tuple[pd.DataFrame, str]:
     xlsx_bytes = _download_xlsx_from_share(HAKABEGOLD_SHARE_URL)
     xls = pd.ExcelFile(BytesIO(xlsx_bytes))
@@ -219,7 +195,7 @@ def parse_hakabegold(_: str = "") -> Tuple[pd.DataFrame, str]:
         )
 
     tanggal = _extract_date_from_raw(raw_df_for_meta)
-    buyback_per_gram = _explain_buyback_per_gram(raw_df_for_meta)
+    buyback_per_gram = _extract_buyback_per_gram(raw_df_for_meta)
 
     if buyback_per_gram > 0:
         data_df["buyback_idr"] = (data_df["weight_g"] * buyback_per_gram).round().astype(int)
