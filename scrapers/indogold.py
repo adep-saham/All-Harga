@@ -4,6 +4,8 @@ import re
 
 URL_INDOGOLD = "https://www.indogold.id/detail-emas-batangan"
 
+ALLOWED_WEIGHTS = {0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 25.0, 50.0, 100.0}
+
 def _idr(text: str) -> int:
     if not text:
         return 0
@@ -23,28 +25,17 @@ def _extract_last_update(text: str) -> str | None:
     return m.group(1).strip() if m else None
 
 def _norm_vendor(product: str) -> str:
-    """
-    Biar vendor rapi dan konsisten.
-    """
-    p = (product or "").strip()
-    up = p.upper()
-
-    if up.startswith("UBS"):
+    up = (product or "").upper()
+    if "UBS" in up:
         return "UBS"
     if "ANTAM" in up:
         return "Antam"
-    if up.startswith("LM") or "LOGAM MULIA" in up:
-        return "LM"
     # fallback: kata pertama
+    p = (product or "").strip()
     return (p.split()[0] if p else "IndoGold").title()
 
 def parse_indogold(html: str):
-    """
-    Return:
-      df columns: vendor, weight_g, sell_idr, buyback_idr
-      update_label: str
-    """
-    # strip tags kasar -> text
+    # strip tags -> text lines
     text = re.sub(r"<[^>]+>", "\n", html or "")
     text = re.sub(r"&nbsp;|&#160;", " ", text)
     text = re.sub(r"\r", "", text)
@@ -52,58 +43,64 @@ def parse_indogold(html: str):
     text = re.sub(r"\n\s+", "\n", text)
 
     last_update = _extract_last_update(text)
-
     lines = [l.strip() for l in text.splitlines() if l.strip()]
 
+    # cari semua index "Nama"
+    idxs = [i for i, l in enumerate(lines) if l.lower() == "nama"]
+
     rows = []
-    i = 0
-    while i < len(lines):
-        if lines[i].lower() == "nama" and i + 1 < len(lines):
-            product = lines[i + 1]
+    for k, start in enumerate(idxs):
+        end = idxs[k + 1] if k + 1 < len(idxs) else len(lines)
+        block = lines[start:end]
 
-            buy_price = 0
-            sell_price = 0
+        # product ada di baris setelah "Nama"
+        if len(block) < 2:
+            continue
+        product = block[1]
+        w = _weight_g(product)
+        vendor = _norm_vendor(product)
 
-            window = lines[i:i+30]
-            for j in range(len(window) - 1):
-                if window[j].lower() == "harga beli":
-                    buy_price = _idr(window[j + 1])
-                elif window[j].lower() == "harga jual":
-                    sell_price = _idr(window[j + 1])
+        # hanya UBS & Antam, dan hanya berat yang ada di tabel compare
+        if vendor not in {"UBS", "Antam"}:
+            continue
+        if w not in ALLOWED_WEIGHTS:
+            continue
 
-            w = _weight_g(product)
-            vendor = _norm_vendor(product)
+        buy_price = 0
+        sell_price = 0
 
-            # validasi minimal
-            if w > 0 and (buy_price > 0 or sell_price > 0):
-                rows.append({
-                    "product": product,
-                    "vendor": vendor,
-                    "weight_g": w,
-                    "sell_idr": buy_price,      # harga beli (ke konsumen)
-                    "buyback_idr": sell_price,  # harga jual (buyback)
-                })
-        i += 1
+        # cari harga dalam blok ini saja (anti nyangkut produk sebelah)
+        for i in range(len(block) - 1):
+            if block[i].lower() == "harga beli":
+                buy_price = _idr(block[i + 1])
+            elif block[i].lower() == "harga jual":
+                sell_price = _idr(block[i + 1])
 
-    df = pd.DataFrame(rows)
+        if buy_price or sell_price:
+            rows.append({
+                "vendor": vendor,
+                "weight_g": w,
+                "sell_idr": buy_price,      # harga beli (ke konsumen)
+                "buyback_idr": sell_price,  # harga jual (buyback)
+            })
+
+    df = pd.DataFrame(rows, columns=["vendor", "weight_g", "sell_idr", "buyback_idr"])
 
     if df.empty:
         label = "IndoGold — parsing kosong"
         if last_update:
             label = f"IndoGold — parsing kosong — Last Update: {last_update}"
-        return pd.DataFrame(columns=["vendor", "weight_g", "sell_idr", "buyback_idr"]), label
+        return df, label
 
-    # tipe data
+    # rapikan tipe
     df["weight_g"] = pd.to_numeric(df["weight_g"], errors="coerce").fillna(0.0)
     df["sell_idr"] = pd.to_numeric(df["sell_idr"], errors="coerce").fillna(0).astype(int)
     df["buyback_idr"] = pd.to_numeric(df["buyback_idr"], errors="coerce").fillna(0).astype(int)
 
-    # 1) buang duplikat product (sering muncul 2x karena template/hidden)
-    df = df.drop_duplicates(subset=["product", "sell_idr", "buyback_idr"], keep="first")
-
-    # 2) dedup per vendor + weight (ambil harga max supaya satu baris per berat)
+    # dedup per vendor+weight
     df = (
-        df.groupby(["vendor", "weight_g"], as_index=False)
+        df.sort_values(["vendor", "weight_g", "sell_idr", "buyback_idr"])
+          .groupby(["vendor", "weight_g"], as_index=False)
           .agg({"sell_idr": "max", "buyback_idr": "max"})
           .sort_values(["vendor", "weight_g"])
           .reset_index(drop=True)
@@ -112,7 +109,4 @@ def parse_indogold(html: str):
     label = "IndoGold"
     if last_update:
         label = f"IndoGold — Last Update: {last_update}"
-    else:
-        label = "IndoGold — Last Update: (tidak terbaca)"
-
     return df, label
