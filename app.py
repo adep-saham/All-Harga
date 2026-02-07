@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import requests
 import pandas as pd
@@ -66,7 +65,11 @@ st.set_page_config(page_title="All Harga Emas", layout="wide")
 st.title("All Harga Emas")
 
 # Source selector
-source = st.sidebar.radio("Sumber", ["Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold", "HK Logam Mulia"], index=0)
+source = st.sidebar.radio(
+    "Sumber",
+    ["Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold", "HK Logam Mulia"],
+    index=0
+)
 
 # URL mapping (caption)
 URLS = {
@@ -76,7 +79,6 @@ URLS = {
     "HRTA": URL_HRTA,
     "IndoGold": URL_INDOGOLD,
     "HK Logam Mulia": URL_HAKABEGOLD,
-
 }
 st.caption(URLS[source])
 
@@ -88,11 +90,13 @@ if st.button("Ambil data sekarang"):
         # Fetch + Parse per source
         # =========================
         if source == "IndoGold":
-            # IndoGold: tetap fetch HTML untuk last_update + kemungkinan kebutuhan sesi/cookie,
-            # lalu scraper akan panggil API JSON (comparison_antamxubs)
             url = URLS[source]
             html = fetch_html(url)
             df, update_label = parse_indogold(html)
+
+        elif source == "HK Logam Mulia":
+            # HakabeGold: parse_hakabegold() sekarang auto-discover sendiri (tanpa secret OneDrive)
+            df, update_label = parse_hakabegold("")
 
         else:
             url = URLS[source]
@@ -104,8 +108,6 @@ if st.button("Ambil data sekarang"):
                 df, update_label = parse_stargold(html)
             elif source == "AnekaLogam":
                 df, update_label = parse_anekalogam(html)
-            elif source == "HK Logam Mulia":
-                df, update_label = parse_hakabegold(html)
             else:  # HRTA
                 df, update_label = parse_hrta("")
 
