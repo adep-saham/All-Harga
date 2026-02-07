@@ -7,6 +7,7 @@ from io import BytesIO
 from scrapers.galeri24 import parse_galeri24, URL_GALERI24
 from scrapers.stargold import parse_stargold, URL_STARGOLD
 from scrapers.anekalogam import parse_anekalogam, URL_ANEKALOGAM
+from scrapers.hrta import parse_hrta, URL_HRTA
 
 
 # =========================
@@ -52,13 +53,14 @@ st.set_page_config(page_title="All Harga Emas", layout="wide")
 st.title("All Harga Emas")
 
 # Source selector
-source = st.sidebar.radio("Sumber", ["Galeri24", "StarGold", "AnekaLogam"], index=0)
+source = st.sidebar.radio("Sumber", ["Galeri24", "StarGold", "AnekaLogam", "HRTA"], index=0)
 
 # URL mapping (FIX: ini yang bikin caption selalu benar)
 URLS = {
     "Galeri24": URL_GALERI24,
     "StarGold": URL_STARGOLD,
     "AnekaLogam": URL_ANEKALOGAM,
+    "HRTA": URL_HRTA,
 }
 st.caption(URLS[source])
 
@@ -74,8 +76,10 @@ if st.button("Ambil data sekarang"):
             df, update_label = parse_galeri24(html)
         elif source == "StarGold":
             df, update_label = parse_stargold(html)
-        else:
+        elif source == "AnekaLogam":
             df, update_label = parse_anekalogam(html)
+        else:  # HRTA
+            df, update_label = parse_hrta(html)
 
         st.subheader(update_label)
         st.success(f"Berhasil: {len(df)} baris")
