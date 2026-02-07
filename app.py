@@ -73,6 +73,12 @@ if st.button("Ambil data sekarang"):
         url = URLS[source]
         html = fetch_html(url)
 
+        # === DEBUG SEMENTARA (IndoGold) ===
+        if source == "IndoGold":
+            st.write("Len HTML:", len(html))
+            st.code(html[:2000])  # tampilkan 2000 karakter awal
+        # === END DEBUG ===
+        
         # parse sesuai source
         if source == "Galeri24":
             df, update_label = parse_galeri24(html)
