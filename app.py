@@ -92,7 +92,7 @@ if st.button("Ambil data sekarang"):
         elif source == "AnekaLogam":
             df, update_label = parse_anekalogam(html)
         elif source == "IndoGold":
-            df, update_label = parse_indogold(html)
+            df, update_label = parse_indogold()
         else:  # HRTA
             df, update_label = parse_hrta("")
 
