@@ -79,7 +79,7 @@ if st.button("Ambil data sekarang"):
         elif source == "AnekaLogam":
             df, update_label = parse_anekalogam(html)
         else:  # HRTA
-            df, update_label = parse_hrta(html)
+            df, update_label = parse_hrta("")
 
         st.subheader(update_label)
         st.success(f"Berhasil: {len(df)} baris")
