@@ -55,11 +55,14 @@ def _fetch_text(s: requests.Session, url: str, timeout: int = 30) -> str:
 def _fetch_bytes(s: requests.Session, url: str, timeout: int = 30) -> bytes:
     headers = {
         "User-Agent": UA,
-        "Accept": "*/*",
+        "Accept": (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
+            "application/octet-stream,*/*"
+        ),
         "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
-        "Referer": url,
+        "Referer": "https://www.logammuliahk.com/",
     }
     r = s.get(url, headers=headers, timeout=timeout, allow_redirects=True)
     r.raise_for_status()
@@ -67,7 +70,6 @@ def _fetch_bytes(s: requests.Session, url: str, timeout: int = 30) -> bytes:
 
 
 def _is_xlsx(data: bytes) -> bool:
-    # XLSX = ZIP => diawali "PK"
     return len(data) >= 2 and data[:2] == b"PK"
 
 
@@ -90,10 +92,20 @@ def _resolve_final_url(s: requests.Session, url: str) -> str:
     return r.url
 
 
-def _add_download_1(url: str) -> str:
+def _clean_1drv_share(url: str) -> str:
     """
-    Pastikan parameter download=1 ada.
-    Cocok untuk link 1drv.ms share.
+    Buang query embed/office (em=2, ActiveCell, dll).
+    Intinya: ambil base shortlink 1drv.ms nya saja.
+    """
+    p = urlparse(url)
+    if "1drv.ms" in p.netloc.lower():
+        return urlunparse((p.scheme, p.netloc, p.path, "", "", ""))  # drop query+fragment
+    return url
+
+
+def _ensure_download_1(url: str) -> str:
+    """
+    Pastikan download=1 ada di query.
     """
     p = urlparse(url)
     qs = parse_qs(p.query)
@@ -102,24 +114,63 @@ def _add_download_1(url: str) -> str:
     return urlunparse((p.scheme, p.netloc, p.path, p.params, new_q, p.fragment))
 
 
-def _probe_download_url_for_xlsx(s: requests.Session, url: str) -> Tuple[bool, str]:
+def _extract_any_download_link(html: str) -> Optional[str]:
     """
-    Coba GET dan cek signature 'PK' tanpa banyak asumsi.
-    Return (ok, final_url).
+    Kalau response masih HTML, kadang link download disisipkan di dalam HTML.
+    Kita cari beberapa pola umum.
     """
+    patterns = [
+        # onedrive live download with authkey
+        r"https://onedrive\.live\.com/download\?[^\"'\s>]+",
+        # officecdn download.aspx
+        r"https://res\.public\.onecdn\.static\.microsoft[^\"'\s>]+/_layouts/15/download\.aspx[^\"'\s>]+",
+        r"https://[^\"'\s>]*officeonline[^\"'\s>]+/_layouts/15/download\.aspx[^\"'\s>]+",
+        # kadang ada 1drv.ms direct download link (jarang)
+        r"https://1drv\.ms/[^\"'\s>]+\bdownload=1[^\"'\s>]*",
+    ]
+    for pat in patterns:
+        m = re.search(pat, html, re.I)
+        if m:
+            return m.group(0)
+    return None
+
+
+def _try_download_from_1drv(s: requests.Session, iframe_url: str) -> Tuple[Optional[str], Optional[bytes], str]:
+    """
+    Strategi utama:
+    1) clean 1drv share (drop query)
+    2) add ?download=1
+    3) GET -> kalau XLSX, done
+    4) kalau HTML, cari link download di HTML, fetch lagi
+    """
+    base = _clean_1drv_share(iframe_url)
+    dl = _ensure_download_1(base)
+
     headers = {
         "User-Agent": UA,
-        "Accept": "*/*",
+        "Accept": (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
+            "application/octet-stream,*/*"
+        ),
         "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "Referer": url,
+        "Referer": "https://www.logammuliahk.com/",
     }
-    r = s.get(url, headers=headers, timeout=30, allow_redirects=True)
+
+    r = s.get(dl, headers=headers, timeout=30, allow_redirects=True)
     r.raise_for_status()
 
-    content = r.content
-    return _is_xlsx(content), r.url
+    if _is_xlsx(r.content):
+        return r.url, r.content, "1drv_clean_download=1"
+
+    # masih HTML → coba ambil link download dari HTML-nya
+    html = r.text if isinstance(r.text, str) else r.content.decode("utf-8", errors="ignore")
+    link = _extract_any_download_link(html)
+    if link:
+        b = _fetch_bytes(s, link)
+        if _is_xlsx(b):
+            return link, b, "1drv_html_extract_download_link"
+
+    return None, None, "1drv_download_failed"
 
 
 def _extract_officecdn_download(html: str) -> Optional[str]:
@@ -144,45 +195,44 @@ def _best_effort_download_url_from_params(url: str) -> Optional[str]:
     return None
 
 
-def _resolve_download_url(s: requests.Session, iframe_url: str) -> Tuple[str, str, str]:
+def _resolve_download_url(s: requests.Session, iframe_url: str) -> Tuple[str, str, str, bytes]:
     """
     PRIORITAS:
-    (A) Coba paksa download dari share link: iframe_url + download=1  (paling stabil)
-    (B) Kalau gagal, resolve -> final_iframe_url lalu cari officecdn download.aspx
-    (C) Kalau tidak ada officecdn, cari edit? lalu build download dengan authkey
+    (A) 1drv.ms clean + download=1 (paling stabil)
+    (B) resolve iframe -> HTML -> officecdn download.aspx
+    (C) fallback: cari edit? -> build download (authkey)
     """
-    # (A) DIRECT: 1drv.ms + download=1
-    dl1 = _add_download_1(iframe_url)
-    ok, final_dl1 = _probe_download_url_for_xlsx(s, dl1)
-    if ok:
-        return final_dl1, "1drv_download=1", final_dl1
+    # (A)
+    dl_url, xlsx_bytes, how = _try_download_from_1drv(s, iframe_url)
+    if dl_url and xlsx_bytes:
+        final_iframe_url = _resolve_final_url(s, iframe_url)
+        return dl_url, how, final_iframe_url, xlsx_bytes
 
-    # (B) resolve iframe -> final url, lalu coba ekstrak officecdn dari HTML
+    # (B)
     final_iframe_url = _resolve_final_url(s, iframe_url)
     html = _fetch_text(s, final_iframe_url)
 
     officecdn = _extract_officecdn_download(html)
     if officecdn:
-        return officecdn, "officecdn_download_aspx", final_iframe_url
+        xlsx_bytes = _fetch_bytes(s, officecdn)
+        if _is_xlsx(xlsx_bytes):
+            return officecdn, "officecdn_download_aspx", final_iframe_url, xlsx_bytes
 
-    # (C) fallback: cari edit url (kadang ada authkey)
+    # (C)
     m = re.search(r"https://onedrive\.live\.com/edit\?[^\"'\s]+", html, re.I)
     if m:
         dl = _best_effort_download_url_from_params(m.group(0))
         if dl:
-            return dl, "onedrive_download_with_authkey", final_iframe_url
-
-    # fallback terakhir: coba dari final_iframe_url kalau punya authkey
-    dl2 = _best_effort_download_url_from_params(final_iframe_url)
-    if dl2:
-        return dl2, "final_url_params_authkey", final_iframe_url
+            xlsx_bytes = _fetch_bytes(s, dl)
+            if _is_xlsx(xlsx_bytes):
+                return dl, "onedrive_download_with_authkey", final_iframe_url, xlsx_bytes
 
     raise RuntimeError(
         "Gagal auto-discover link download XLSX.\n"
         f"iframe_url: {iframe_url}\n"
         f"final_iframe_url: {final_iframe_url}\n"
-        "Tidak menemukan officecdn download.aspx dan tidak ada authkey.\n"
-        "Catatan: ini biasanya karena HTML embed dirender via JavaScript di browser."
+        "Catatan: browser bisa karena JS, tapi server requests sering tidak dapat link itu.\n"
+        "Solusi: pastikan iframe src dari Blogger adalah 1drv.ms shortlink dan file OneDrive diset sharing public."
     )
 
 
@@ -224,7 +274,7 @@ def _parse_sheet2_table(xlsx_bytes: bytes) -> HakabeGoldResult:
     if not start_row:
         raise RuntimeError("Tidak menemukan header 'Berat' di XLSX (format berubah).")
 
-    # baca 6 kolom (Berat..Stok)
+    # baca 6 kolom: Berat..Stok
     rows = []
     r = start_row + 1
     while r < start_row + 100:
@@ -255,7 +305,7 @@ def _parse_sheet2_table(xlsx_bytes: bytes) -> HakabeGoldResult:
                 buyback = max(nums)
             break
 
-    # as-of label (ambil string tanggal di area header atas)
+    # as-of label (ambil string tanggal di header atas)
     asof = "HK Logam Mulia"
     for rr in range(1, min(start_row, 25)):
         for cc in range(1, 14):
@@ -296,9 +346,8 @@ def fetch_and_parse_hakabegold() -> HakabeGoldResult:
     main_html = _fetch_text(s, URL_HAKABEGOLD)
     iframe_url = _extract_hk_iframe_src(main_html)
 
-    download_url, method, final_iframe_url = _resolve_download_url(s, iframe_url)
+    download_url, method, final_iframe_url, xlsx_bytes = _resolve_download_url(s, iframe_url)
 
-    xlsx_bytes = _fetch_bytes(s, download_url)
     if not _is_xlsx(xlsx_bytes):
         head = xlsx_bytes[:200].decode("utf-8", errors="ignore")
         raise RuntimeError(
