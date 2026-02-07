@@ -50,15 +50,13 @@ st.caption(URL_GALERI24 if source == "Galeri24" else URL_STARGOLD)
 
 if st.button("Ambil data sekarang"):
     try:
-        if source == "Galeri24":
-            html = fetch_html(URL_GALERI24)
-            df, update_label = parse_galeri24(html)
-        elif source == "StarGold":
-            html = fetch_html(URL_STARGOLD)
-            df, update_label = parse_stargold(html)
-        else:
-            html = fetch_html(URL_ANEKALOGAM)
-            df, update_label = parse_anekalogam(html)
+        URLS = {
+            "Galeri24": URL_GALERI24,
+            "StarGold": URL_STARGOLD,
+            "AnekaLogam": URL_ANEKALOGAM,
+        }
+        st.caption(URLS[source])
+
 
 
         st.subheader(update_label)
