@@ -6,90 +6,113 @@ import requests
 from io import BytesIO
 from typing import Tuple
 
-# Kita gunakan ID file statis yang didapat dari bedah htlm.txt Anda
-# resid ini adalah identitas unik file di server Microsoft
-RESID = "7181A7DF3EAB3581!106"
-AUTHKEY = "!AI3AF18"
+URL_HAKABEGOLD = "https://www.logammuliahk.com/#work"
 
-def _clean_val(val, is_weight=False):
+def _clean_numeric(val, is_weight=False):
+    """Sangat teliti membersihkan angka dari format Excel yang berantakan."""
     if pd.isna(val) or val == "": return 0.0 if is_weight else 0
     s = str(val).lower().replace("gr", "").strip()
     if is_weight:
-        # Ganti koma jadi titik untuk berat (0,5 -> 0.5)
-        return float(s.replace(",", ".")) if s else 0.0
+        # Menangani koma (0,5 -> 0.5)
+        s = s.replace(",", ".")
+        try: return float(re.findall(r"[-+]?\d*\.\d+|\d+", s)[0])
+        except: return 0.0
     else:
-        # Ambil angka saja untuk harga, buang desimal di belakang koma
-        s = s.split(",")[0]
+        # Menangani harga (Rp 1.000.000 -> 1000000)
+        s = s.split(",")[0] # Buang desimal di belakang koma
         digits = re.sub(r"[^\d]", "", s)
         return int(digits) if digits else 0
 
 def parse_hakabegold(html: str = "") -> Tuple[pd.DataFrame, str]:
-    # METODE EKSTRIM: Langsung tembak API Download Microsoft
-    # Ini melewati semua script pelindung di halaman preview
-    direct_url = f"https://onedrive.live.com/download?resid={RESID}&authkey={AUTHKEY}"
+    # 1. IDENTITAS FILE (Sangat Akurat dari htlm.txt)
+    # Kita gunakan direct API link yang paling kuat
+    resid = "7181A7DF3EAB3581!106"
+    authkey = "!AI3AF18"
+    direct_url = f"https://onedrive.live.com/download?resid={resid}&authkey={authkey}"
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0",
-        "Referer": "https://onedrive.live.com/"
-    }
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    })
 
     try:
-        resp = requests.get(direct_url, headers=headers, timeout=30)
-        resp.raise_for_status()
+        # Download dengan verifikasi konten
+        r = s.get(direct_url, timeout=30, allow_redirects=True)
+        if not r.content.startswith(b'PK'):
+            # Jika diblokir, coba trik spoofing referer
+            r = s.get(direct_url, headers={"Referer": "https://onedrive.live.com/"}, timeout=30)
         
-        # Validasi: Apakah ini beneran file Excel? (Header PK = Excel/ZIP)
-        if not resp.content.startswith(b'PK'):
-            return pd.DataFrame(), "HK Logam Mulia — OneDrive memblokir akses otomatis"
-            
-        xls_data = BytesIO(resp.content)
-        # Load dengan engine openpyxl (pastikan openpyxl terinstall)
-        all_sheets = pd.read_excel(xls_data, sheet_name=None, header=None)
+        if not r.content.startswith(b'PK'):
+            return pd.DataFrame(), "HK Logam Mulia — OneDrive memblokir akses (Security Challenge)"
+
+        # 2. PROSES EXCEL (Engine Openpyxl lebih teliti membaca format)
+        xls_data = BytesIO(r.content)
+        all_sheets = pd.read_excel(xls_data, sheet_name=None, header=None, engine='openpyxl')
     except Exception as e:
-        return pd.DataFrame(), f"HK Logam Mulia — Gagal ambil Excel: {str(e)}"
+        return pd.DataFrame(), f"HK Logam Mulia — Sistem Gagal: {str(e)}"
 
     final_df = pd.DataFrame()
-    label = "HK Logam Mulia"
+    asof_label = "HK Logam Mulia"
     buyback_val = 0
 
-    # SCANNING SHEET SECARA AGRESIF
-    for _, df in all_sheets.items():
-        # Cari baris yang mengandung keyword utama
-        # Kita pakai regex supaya lebih fleksibel
-        for i, row in df.head(30).iterrows():
-            row_str = " ".join(row.astype(str).lower())
-            if "berat" in row_str and "end user" in row_str:
-                # Temukan indeks kolom
-                df.columns = df.iloc[i].astype(str).str.lower().str.strip()
-                col_w = next((c for c in df.columns if "berat" in c), None)
-                col_p = next((c for c in df.columns if "end user" in c), None)
+    # 3. SCANNING SETIAP CELL (Mencari koordinat tabel secara presisi)
+    for name, df in all_sheets.items():
+        # Cari baris yang mengandung 'Berat' dan 'Harga'
+        for row_idx in range(min(len(df), 50)):
+            row_data = df.iloc[row_idx].astype(str).str.lower().tolist()
+            row_text = " ".join(row_data)
+            
+            if "berat" in row_text and "end user" in row_text:
+                # Mapping kolom berdasarkan index agar tidak tertukar
+                col_weight_idx = -1
+                col_sell_idx = -1
                 
-                if col_w and col_p:
-                    data = df.iloc[i+1:].copy()
-                    data["weight_g"] = data[col_w].apply(lambda x: _clean_val(x, True))
-                    data["sell_idr"] = data[col_p].apply(lambda x: _clean_val(x, False))
-                    
-                    # Filter data yang valid saja
-                    data = data[(data["weight_g"] > 0) & (data["sell_idr"] > 1000)].copy()
-                    
-                    if not data.empty:
-                        # EKSTRAK META (Tanggal & Buyback)
-                        full_text = " ".join(df.astype(str).values.flatten()).lower()
+                for col_idx, cell_val in enumerate(row_data):
+                    if "berat" in cell_val: col_weight_idx = col_idx
+                    if "end user" in cell_val: col_sell_idx = col_idx
+                
+                if col_weight_idx != -1 and col_sell_idx != -1:
+                    # Ambil data di bawah header
+                    data_rows = []
+                    for next_i in range(row_idx + 1, len(df)):
+                        w_raw = df.iloc[next_i, col_weight_idx]
+                        p_raw = df.iloc[next_i, col_sell_idx]
                         
-                        # Cari angka buyback (biasanya di kalimat 'Buyback Rp 1.100.000/gram')
-                        bb_match = re.search(r"buyback.*?([\d\.,]{5,})", full_text)
+                        w = _clean_numeric(w_raw, is_weight=True)
+                        p = _clean_numeric(p_raw, is_weight=False)
+                        
+                        if w > 0 and p > 1000:
+                            data_rows.append({
+                                "vendor": "HK Logam Mulia",
+                                "weight_g": w,
+                                "sell_idr": p
+                            })
+                    
+                    if data_rows:
+                        final_df = pd.DataFrame(data_rows)
+                        
+                        # --- EKSTRAK META DATA DARI SELURUH SHEET ---
+                        sheet_text = " ".join(df.astype(str).values.flatten()).lower()
+                        
+                        # Cari Buyback (Logika: cari angka setelah kata buyback)
+                        bb_match = re.search(r"buyback.*?(\d[\d\.,]*)", sheet_text)
                         if bb_match:
-                            buyback_val = _clean_val(bb_match.group(1))
-                            label += f" — Buyback: Rp{buyback_val:,}".replace(",", ".")
+                            buyback_val = _clean_numeric(bb_match.group(1))
+                            asof_label += f" — Buyback: Rp{buyback_val:,}".replace(",", ".")
                         
-                        # Cari tanggal
-                        date_match = re.search(r"(\d{1,2}\s+[a-z]{3,}\s+\d{4})", full_text)
+                        # Cari Tanggal
+                        date_match = re.search(r"(\d{1,2}\s+[a-z]{3,}\s+\d{4})", sheet_text)
                         if date_match:
-                            label += f" — {date_match.group(1).title()}"
-
-                        data["vendor"] = "HK Logam Mulia"
-                        data["buyback_idr"] = (data["weight_g"] * buyback_val).astype(int)
-                        final_df = data[["vendor", "weight_g", "sell_idr", "buyback_idr"]]
+                            asof_label += f" — {date_match.group(1).title()}"
+                        
                         break
         if not final_df.empty: break
 
-    return final_df.sort_values("weight_g").reset_index(drop=True), label
+    if final_df.empty:
+        return pd.DataFrame(), "HK Logam Mulia — Data tabel Excel kosong atau format berubah"
+
+    # 4. HITUNG BUYBACK TOTAL
+    final_df["buyback_idr"] = (final_df["weight_g"] * buyback_val).astype(int)
+    
+    return final_df.sort_values("weight_g").reset_index(drop=True), asof_label
