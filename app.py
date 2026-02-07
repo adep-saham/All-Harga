@@ -75,8 +75,13 @@ if st.button("Ambil data sekarang"):
 
         # === DEBUG SEMENTARA (IndoGold) ===
         if source == "IndoGold":
-            st.write("Len HTML:", len(html))
-            st.code(html[:2000])  # tampilkan 2000 karakter awal
+        # list semua script src yang ditemukan
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        srcs = [s.get("src") for s in soup.find_all("script") if s.get("src")]
+        st.write("Script count:", len(srcs))
+        st.write(srcs[:20])
+
         # === END DEBUG ===
         
         # parse sesuai source
