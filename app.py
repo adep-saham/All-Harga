@@ -6,6 +6,8 @@ from io import BytesIO
 
 from scrapers.galeri24 import parse_galeri24, URL_GALERI24
 from scrapers.stargold import parse_stargold, URL_STARGOLD
+from scrapers.anekalogam import parse_anekalogam, URL_ANEKALOGAM
+
 
 # ===== helpers for UI/download =====
 def format_rp(x: int) -> str:
@@ -43,7 +45,7 @@ def fetch_html(url: str) -> str:
 st.set_page_config(page_title="All Harga Emas", layout="wide")
 st.title("All Harga Emas")
 
-source = st.sidebar.radio("Sumber", ["Galeri24", "StarGold"], index=0)
+source = st.sidebar.radio("Sumber", ["Galeri24", "StarGold", "AnekaLogam"], index=0)
 st.caption(URL_GALERI24 if source == "Galeri24" else URL_STARGOLD)
 
 if st.button("Ambil data sekarang"):
@@ -51,9 +53,13 @@ if st.button("Ambil data sekarang"):
         if source == "Galeri24":
             html = fetch_html(URL_GALERI24)
             df, update_label = parse_galeri24(html)
-        else:
+        elif source == "StarGold":
             html = fetch_html(URL_STARGOLD)
             df, update_label = parse_stargold(html)
+        else:
+            html = fetch_html(URL_ANEKALOGAM)
+            df, update_label = parse_anekalogam(html)
+
 
         st.subheader(update_label)
         st.success(f"Berhasil: {len(df)} baris")
