@@ -50,12 +50,13 @@ st.caption(URL_GALERI24 if source == "Galeri24" else URL_STARGOLD)
 
 if st.button("Ambil data sekarang"):
     try:
-        URLS = {
-            "Galeri24": URL_GALERI24,
-            "StarGold": URL_STARGOLD,
-            "AnekaLogam": URL_ANEKALOGAM,
-        }
-        st.caption(URLS[source])
+        if source == "Galeri24":
+            st.caption(URL_GALERI24)
+        elif source == "StarGold":
+            st.caption(URL_STARGOLD)
+        else:
+            st.caption(URL_ANEKALOGAM)
+
 
 
 
