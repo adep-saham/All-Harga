@@ -1,6 +1,5 @@
 from __future__ import annotations
 import os
-import re
 import pandas as pd
 from datetime import datetime
 from bs4 import BeautifulSoup
@@ -10,13 +9,12 @@ URL_STARGOLD = "https://stargold.id/price/"
 
 def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
     """
-    Parser 'Regex-Mode': Mencari pola berat dan harga emas secara cerdas
-    tanpa bergantung pada struktur tabel yang kaku.
+    Parser khusus untuk struktur HTML Stargold yang ditemukan di source web.txt.
     """
     final_html = html
     source_label = "Live Web"
 
-    # --- 1. RADAR PENCARIAN FILE ---
+    # --- 1. PENCARIAN FILE ---
     if not final_html or len(final_html) < 500:
         target_file = "source web.txt"
         possible_paths = [
@@ -33,52 +31,54 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
                 break
         
         if not final_html:
-            return pd.DataFrame(), f"Gagal: File '{target_file}' tidak ada di folder project."
+            return pd.DataFrame(), f"Gagal: File '{target_file}' tidak ditemukan."
 
-    # --- 2. EKSTRAKSI DATA (TEKNIK REGEX) ---
+    # --- 2. EKSTRAKSI DATA BERDASARKAN STRUKTUR SOURCE WEB.TXT ---
     try:
         soup = BeautifulSoup(final_html, "html.parser")
         all_data = []
 
-        # Cari semua baris tabel (tr) di seluruh dokumen
-        rows = soup.find_all("tr")
+        # Cari setiap blok pembungkus tabel (compare-page-wrapper)
+        sections = soup.find_all("div", class_="compare-page-wrapper")
         
-        for row in rows:
-            cols = row.find_all(["td", "th"])
-            if len(cols) >= 2:
-                # Ambil teks mentah dari kolom pertama (Produk/Berat)
-                text_produk = cols[0].get_text(" ", strip=True).lower()
+        for section in sections:
+            # Cari Nama Vendor (Antam, Stargold, dll) di dalam judul section [cite: 8, 11]
+            title_tag = section.find("h2", class_="title")
+            if not title_tag:
+                continue
+            
+            vendor_name = title_tag.get_text(strip=True).upper()
+            
+            # Cari tabel di dalam section tersebut
+            table = section.find("table")
+            if not table:
+                continue
                 
-                # Pola Regex: Mencari angka (bisa koma/titik) diikuti kata 'gr' atau 'gram'
-                # Contoh: '0,5 gr', '1 gram', '10gr'
-                weight_match = re.search(r"(\d+[.,]?\d*)\s*(?:gr|gram)", text_produk)
+            rows = table.find_all("tr")
+            for row in rows:
+                cols = row.find_all("td")
+                # Lewati baris header "Berat (gr)", "Harga Jual", dll [cite: 8]
+                if not cols or "Berat" in row.get_text():
+                    continue
                 
-                if weight_match:
+                if len(cols) >= 3:
                     try:
-                        # Ambil angka berat dan ubah koma jadi titik
-                        raw_weight = weight_match.group(1).replace(",", ".")
-                        weight_val = float(raw_weight)
+                        # Berat ada di dalam <td class="first-column"><p> 
+                        weight_text = cols[0].find("p").get_text(strip=True) if cols[0].find("p") else cols[0].get_text(strip=True)
+                        weight_val = float(weight_text.replace(",", "."))
 
-                        # Tentukan Vendor (Antam/UBS/Stargold)
-                        vendor = "STARGOLD"
-                        if "antam" in text_produk: vendor = "ANTAM"
-                        elif "ubs" in text_produk: vendor = "UBS"
-                        elif "emaskita" in text_produk: vendor = "EMASKITA"
-
-                        # Ambil Harga Jual dari kolom kedua
-                        sell_text = cols[1].get_text(strip=True)
+                        # Harga Jual ada di <td class="pro-price"><p> pertama 
+                        sell_text = cols[1].find("p").get_text(strip=True) if cols[1].find("p") else cols[1].get_text(strip=True)
                         sell_val = "".join(filter(str.isdigit, sell_text))
 
-                        # Ambil Harga Buyback dari kolom ketiga (jika ada)
-                        buyback_val = 0
-                        if len(cols) >= 3:
-                            bb_text = cols[2].get_text(strip=True)
-                            bb_digit = "".join(filter(str.isdigit, bb_text))
-                            buyback_val = int(bb_digit) if bb_digit else 0
+                        # Harga Buyback ada di <td class="pro-price"><p> kedua 
+                        buyback_text = cols[2].find("p").get_text(strip=True) if cols[2].find("p") else cols[2].get_text(strip=True)
+                        buyback_val_str = "".join(filter(str.isdigit, buyback_text))
+                        buyback_val = int(buyback_val_str) if buyback_val_str else 0
 
                         if sell_val:
                             all_data.append({
-                                "vendor": vendor,
+                                "vendor": vendor_name,
                                 "weight_g": weight_val,
                                 "sell_idr": int(sell_val),
                                 "buyback_idr": buyback_val
@@ -87,13 +87,11 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
                         continue
 
         if not all_data:
-            return pd.DataFrame(), "Data tetap kosong. Pastikan isi 'source web.txt' adalah hasil Ctrl+U (View Source)."
+            return pd.DataFrame(), f"Data kosong. Periksa apakah tabel harga ada di {source_label}."
 
         # --- 3. FINALISASI ---
         df = pd.DataFrame(all_data)
-        # Hapus jika ada duplikat berat yang sama di vendor yang sama
         df = df.drop_duplicates(subset=["vendor", "weight_g", "sell_idr"])
-        # Urutkan agar rapi di grafik
         df = df.sort_values(["vendor", "weight_g"]).reset_index(drop=True)
         
         ts = datetime.now().strftime("%d/%m/%y %H:%M:%S")
