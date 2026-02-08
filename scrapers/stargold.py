@@ -1,98 +1,65 @@
-import requests
+from datetime import datetime
 import pandas as pd
-from bs4 import BeautifulSoup
-import re
-from typing import Tuple
 
-URL_STARGOLD = "https://stargold.id/price/"
+# === SOURCE RESMI (Google Sheets publish CSV) ===
+STARGOLD_SHEET_CSV = (
+    "https://docs.google.com/spreadsheets/d/e/"
+    "2PACX-1vSVUOrPaB273nGNBr_7h4ZDKWKd3HvEtmQuN4NXK1MDibiDxmB3J4aH1uE2bhn0IpJju1BgeoBJsfad"
+    "/pub?gid=2127782410&single=true&output=csv"
+)
 
+SOURCE_SITE = "stargold"
+SOURCE_URL = "https://stargold.id/price/"
 
-def _to_int(text: str) -> int:
-    if not text:
-        return 0
-    text = (
-        text.replace("Rp", "")
-        .replace(".", "")
-        .replace(",", "")
-        .replace("*", "")
-        .strip()
-    )
-    return int(text) if text.isdigit() else 0
+WEIGHT_ORDER = [0.1, 0.25, 0.5, 1, 2, 3, 4, 5, 10, 25, 50, 100, 250, 500, 1000]
+WEIGHT_RANK = {w: i for i, w in enumerate(WEIGHT_ORDER)}
 
 
-def _to_float(text: str) -> float:
-    if not text:
-        return 0.0
-    text = text.replace(",", ".").strip()
-    try:
-        return float(text)
-    except:
-        return 0.0
+def weight_sort_key(w: float):
+    if w in WEIGHT_RANK:
+        return (0, WEIGHT_RANK[w])
+    return (1, w)
 
 
-def parse_stargold(_: str = "") -> Tuple[pd.DataFrame, str]:
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-    }
+def parse_stargold() -> tuple[pd.DataFrame, str]:
+    """
+    Load StarGold ALL VENDOR data from Google Sheets CSV
+    Return:
+      - DataFrame standar MI
+      - update_label
+    """
 
-    r = requests.get(URL_STARGOLD, headers=headers, timeout=30)
-    r.raise_for_status()
+    df = pd.read_csv(STARGOLD_SHEET_CSV)
 
-    soup = BeautifulSoup(r.text, "html.parser")
+    if df.empty:
+        raise RuntimeError("StarGold CSV kosong atau tidak bisa dibaca.")
 
-    wrappers = soup.find_all("div", class_="compare-page-wrapper")
-    if not wrappers:
-        raise ValueError("StarGold: blok harga tidak ditemukan.")
+    # === NORMALISASI ===
+    df["vendor"] = df["vendor"].astype(str).str.upper().str.strip()
+    df["weight_g"] = pd.to_numeric(df["weight_g"], errors="coerce")
+    df["sell_idr"] = pd.to_numeric(df["sell_idr"], errors="coerce").fillna(0).astype(int)
+    df["buyback_idr"] = pd.to_numeric(df["buyback_idr"], errors="coerce").fillna(0).astype(int)
 
-    records = []
+    df = df[df["weight_g"].notna()]
+    df = df[df["weight_g"] > 0]
 
-    # =====================================================
-    # LOOP SEMUA VENDOR
-    # =====================================================
-    for wrap in wrappers:
-        title = wrap.find("h2", class_="title")
-        table = wrap.find("table")
+    snapshot_ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    update_label = f"Google Sheets Update: {snapshot_ts}"
 
-        if not title or not table:
-            continue
+    # === STANDAR KOLOM MI ===
+    df["snapshot_ts"] = snapshot_ts
+    df["update_label"] = update_label
+    df["source_site"] = SOURCE_SITE
+    df["source_url"] = SOURCE_URL
 
-        vendor_name = title.get_text(strip=True)
-
-        rows = table.find_all("tr")[1:]  # skip header
-        for tr in rows:
-            tds = tr.find_all("td")
-            if len(tds) < 3:
-                continue
-
-            berat_txt = tds[0].get_text(strip=True)
-            jual_txt = tds[1].get_text(strip=True)
-            buy_txt = tds[2].get_text(strip=True)
-
-            weight = _to_float(berat_txt)
-            sell = _to_int(jual_txt)
-            buyback = _to_int(buy_txt)
-
-            if weight > 0 and sell > 0:
-                records.append({
-                    "vendor": vendor_name,
-                    "weight_g": weight,
-                    "sell_idr": sell,
-                    "buyback_idr": buyback,
-                    "stock": "Ready"
-                })
-
-    if not records:
-        raise ValueError("StarGold: data kosong setelah parsing.")
+    # === SORT RAPI ===
+    df["__w0"] = df["weight_g"].map(lambda x: weight_sort_key(float(x))[0])
+    df["__w1"] = df["weight_g"].map(lambda x: weight_sort_key(float(x))[1])
 
     df = (
-        pd.DataFrame(records)
-        .sort_values(["vendor", "weight_g"])
-        .reset_index(drop=True)
+        df.sort_values(["vendor", "__w0", "__w1"])
+          .drop(columns=["__w0", "__w1"])
+          .reset_index(drop=True)
     )
 
-    return df, "StarGold (All Vendors)"
+    return df, update_label
