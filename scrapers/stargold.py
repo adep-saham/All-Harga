@@ -1,75 +1,67 @@
 from __future__ import annotations
 from datetime import datetime
 import pandas as pd
-import cloudscraper
+import cloudscraper # Wajib diinstall: pip install cloudscraper
 from bs4 import BeautifulSoup
 
-# URL Website Utama
 URL_STARGOLD = "https://stargold.id/price/"
 
 def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
     """
-    Scraper presisi untuk stargold.id menggunakan cloudscraper.
+    Menggunakan cloudscraper untuk menembus proteksi 'RemoteDisconnected'.
     """
     try:
-        # 1. Ambil HTML jika tidak diberikan (Live Scraping)
-        if not html:
-            # Cloudscraper meniru browser asli untuk menghindari 'Connection Reset'
+        # Jika dipanggil dengan string kosong, lakukan fetch sendiri
+        if not html or len(html) < 100:
+            # Membuat scraper yang meniru browser Chrome di Windows
             scraper = cloudscraper.create_scraper(
                 browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
             )
-            response = scraper.get(URL_STARGOLD, timeout=20)
-            response.raise_for_status()
+            # Menembus firewall Stargold
+            response = scraper.get(URL_STARGOLD, timeout=30)
             html = response.text
 
         soup = BeautifulSoup(html, "html.parser")
         all_data = []
 
-        # 2. Cari tabel dengan class 'table-sm' sesuai htlm.txt
+        # Mencari tabel harga sesuai class di file htlm.txt Anda
         tables = soup.find_all("table", class_="table-sm")
         
         for table in tables:
             rows = table.find_all("tr")
             for row in rows:
                 cols = row.find_all("td")
-                
-                # Sesuai htlm.txt: Kolom 0=Berat, 1=Jual, 2=Buyback
                 if len(cols) >= 3:
                     raw_weight = cols[0].get_text(strip=True).lower()
                     raw_sell = cols[1].get_text(strip=True)
                     raw_buyback = cols[2].get_text(strip=True)
 
-                    # Filter: Hanya ambil baris yang mengandung satuan berat 'gr'
+                    # Hanya memproses baris yang berisi satuan 'gr'
                     if "gr" in raw_weight:
                         try:
-                            # Bersihkan Berat: '0,1 gr' -> 0.1 (Ganti koma jadi titik)
-                            weight_val = raw_weight.replace("gr", "").replace(",", ".").strip()
-                            
-                            # Bersihkan Harga: 'Rp. 367.400' -> 367400 (Ambil angka saja)
-                            sell_val = "".join(filter(str.isdigit, raw_sell))
-                            buyback_val = "".join(filter(str.isdigit, raw_buyback))
+                            # Bersihkan berat (0,1 gr -> 0.1)
+                            w_val = raw_weight.replace("gr", "").replace(",", ".").strip()
+                            # Bersihkan harga (Rp. 367.400 -> 367400)
+                            s_val = "".join(filter(str.isdigit, raw_sell))
+                            b_val = "".join(filter(str.isdigit, raw_buyback))
 
                             all_data.append({
                                 "vendor": "STARGOLD",
-                                "weight_g": float(weight_val),
-                                "sell_idr": int(sell_val) if sell_val else 0,
-                                "buyback_idr": int(buyback_val) if buyback_val else 0
+                                "weight_g": float(w_val),
+                                "sell_idr": int(s_val) if s_val else 0,
+                                "buyback_idr": int(b_val) if b_val else 0
                             })
-                        except (ValueError, IndexError):
+                        except:
                             continue
 
         if not all_data:
-            return pd.DataFrame(), "Gagal mengekstrak data dari tabel HTML."
+            return pd.DataFrame(), "Gagal mengekstrak tabel. Struktur mungkin berubah."
 
-        # 3. Finalisasi Data
         df = pd.DataFrame(all_data)
-        # Hapus duplikat dan urutkan berdasarkan berat
         df = df.drop_duplicates(subset=["weight_g", "sell_idr"]).sort_values("weight_g").reset_index(drop=True)
         
         ts = datetime.now().strftime("%d/%m/%y %H:%M:%S")
-        update_label = f"StarGold (Live Scrape) - Updated: {ts}"
-        
-        return df, update_label
+        return df, f"StarGold (Live Web) - Updated: {ts}"
 
     except Exception as e:
         return pd.DataFrame(), f"Error Scraping: {str(e)}"
