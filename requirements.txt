@@ -10,3 +10,4 @@ curl_cffi
 crawl4ai
 torch
 transformers
+plotly
