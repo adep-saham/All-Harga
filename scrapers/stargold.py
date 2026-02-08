@@ -4,58 +4,65 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-# URL Website Utama
+# URL Website Utama untuk scraping
 URL_STARGOLD = "https://stargold.id/price/"
 
 def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
     """
-    Melakukan scraping langsung dari tabel di https://stargold.id/price/
+    Scraper langsung dari website stargold.id/price/
     """
     try:
-        # Jika html kosong (dipanggil tanpa argumen), ambil data baru
-        if not html:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            }
-            response = requests.get(URL_STARGOLD, headers=headers, timeout=30)
-            response.raise_for_status()
-            html = response.text
+        # Jika dipanggil dari app.py dengan string kosong, kita ambil HTML-nya sendiri
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        response = requests.get(URL_STARGOLD, headers=headers, timeout=20)
+        response.raise_for_status()
+        html_content = response.text
 
-        soup = BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(html_content, "html.parser")
         
-        # Cari tabel di halaman tersebut
-        # Biasanya data harga ada di dalam tag <table>
+        # Mencari tabel di halaman tersebut
         tables = soup.find_all("table")
-        
+        if not tables:
+            return pd.DataFrame(), "Gagal menemukan tabel harga di website."
+
         all_data = []
         
+        # Iterasi melalui tabel (Stargold biasanya punya tabel per kategori)
         for table in tables:
-            # Identifikasi baris tabel
             rows = table.find_all("tr")
-            for row in rows[1:]:  # Skip header
+            for row in rows[1:]:  # Lewati header
                 cols = row.find_all("td")
                 if len(cols) >= 3:
-                    # Bersihkan teks (hapus "gr", "Rp", titik, dan spasi)
-                    weight_text = cols[0].text.strip().lower().replace("gr", "").replace(",", ".")
-                    sell_text = cols[1].text.strip().replace("Rp", "").replace(".", "").replace(",", "")
-                    buyback_text = cols[2].text.strip().replace("Rp", "").replace(".", "").replace(",", "")
+                    # Ambil teks dan bersihkan
+                    raw_weight = cols[0].get_text(strip=True).lower().replace("gr", "").replace(",", ".")
+                    raw_sell = cols[1].get_text(strip=True).replace("Rp", "").replace(".", "").replace(",", "")
+                    raw_buyback = cols[2].get_text(strip=True).replace("Rp", "").replace(".", "").replace(",", "")
                     
                     try:
-                        all_data.append({
-                            "vendor": "STARGOLD",
-                            "weight_g": float(weight_text),
-                            "sell_idr": int(sell_text) if sell_text.isdigit() else 0,
-                            "buyback_idr": int(buyback_text) if buyback_text.isdigit() else 0
-                        })
+                        # Konversi ke tipe data yang sesuai untuk app.py
+                        weight = float(raw_weight)
+                        sell = int(raw_sell) if raw_sell.isdigit() else 0
+                        buyback = int(raw_buyback) if raw_buyback.isdigit() else 0
+                        
+                        if weight > 0:
+                            all_data.append({
+                                "vendor": "STARGOLD",
+                                "weight_g": weight,
+                                "sell_idr": sell,
+                                "buyback_idr": buyback
+                            })
                     except ValueError:
                         continue
 
         if not all_data:
-            return pd.DataFrame(), "Data tidak ditemukan di tabel website."
+            return pd.DataFrame(), "Data tidak ditemukan atau struktur tabel berubah."
 
         df = pd.DataFrame(all_data)
         
-        # Standarisasi data
+        # Bersihkan duplikat dan urutkan berdasarkan berat
+        df = df.drop_duplicates(subset=["weight_g"], keep="first")
         df = df.sort_values("weight_g").reset_index(drop=True)
         
         ts = datetime.now().strftime("%d/%m/%y %H:%M:%S")
@@ -64,4 +71,4 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
         return df, update_label
 
     except Exception as e:
-        return pd.DataFrame(), f"Error Scraping: {str(e)}"
+        return pd.DataFrame(), f"Error Scraping StarGold: {str(e)}"
