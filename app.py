@@ -2,7 +2,6 @@ import streamlit as st
 import requests
 import pandas as pd
 from io import BytesIO
-import plotly.express as px
 
 # =========================================================
 # IMPORT SCRAPERS & UTILS
@@ -15,8 +14,14 @@ from scrapers.indogold import parse_indogold, URL_INDOGOLD
 from scrapers.hakabegold import parse_hakabegold, URL_HAKABEGOLD
 from scrapers.agungjewellery import parse_agungjewellery
 
-from utils.uploader import render_uploader_sidebar
-from utils.history_manager import get_full_history
+# Pastikan folder utils dan file ini sudah Anda buat sebelumnya
+try:
+    from utils.uploader import render_uploader_sidebar
+    from utils.history_manager import get_full_history
+except ImportError:
+    # Fallback jika folder utils belum dibuat agar app tidak crash
+    def render_uploader_sidebar(): pass
+    def get_full_history(): return pd.DataFrame()
 
 # =========================================================
 # PAGE CONFIG
@@ -30,6 +35,7 @@ st.set_page_config(
 # HELPERS
 # =========================================================
 def format_rp(x):
+    """Format angka ke Rupiah dengan pemisah titik."""
     try:
         return f"Rp{int(x):,}".replace(",", ".")
     except Exception:
@@ -37,133 +43,143 @@ def format_rp(x):
 
 @st.cache_data(ttl=300)
 def fetch_html(url: str) -> str:
+    """Generic HTML fetcher."""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0",
             "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8",
         }
-        r = requests.get(url, headers=headers, timeout=15)
+        r = requests.get(url, headers=headers, timeout=30)
         r.raise_for_status()
-        return r.text
-    except Exception as e:
-        return f"ERROR: {e}"
+        return r.text or ""
+    except Exception:
+        return ""
+
+def get_all_antam_100g():
+    """Mengumpulkan data Antam 100g dari semua sumber."""
+    results = []
+    # Daftar fungsi scraper
+    scrapers = [
+        ("Galeri 24", lambda: parse_galeri24(fetch_html(URL_GALERI24))),
+        ("StarGold", lambda: parse_stargold("")),
+        ("Aneka Logam", lambda: parse_anekalogam(fetch_html(URL_ANEKALOGAM))),
+        ("HRTA", lambda: parse_hrta("")),
+        ("IndoGold", lambda: parse_indogold(fetch_html(URL_INDOGOLD))),
+        ("Hakabe Gold", lambda: parse_hakabegold()),
+        ("Agung Jewellery", lambda: parse_agungjewellery()),
+    ]
+
+    for source_name, func in scrapers:
+        try:
+            df_tmp, _ = func()
+            if df_tmp is not None and not df_tmp.empty:
+                # Filter: Hanya Antam dan berat 100
+                mask = (df_tmp['vendor'].str.contains('ANTAM', case=False, na=False)) & \
+                       (df_tmp['weight_g'] == 100)
+                filtered = df_tmp[mask].copy()
+                if not filtered.empty:
+                    row = filtered.iloc[0]
+                    results.append({
+                        "Nama Toko Emas": source_name,
+                        "Harga Jual": row['sell_idr'],
+                        "Harga Beli": row['buyback_idr']
+                    })
+        except Exception:
+            continue
+    return pd.DataFrame(results)
 
 # =========================================================
-# SIDEBAR
+# UI SIDEBAR
 # =========================================================
-with st.sidebar:
-    st.title("⚙️ Kontrol")
-    
-    # FITUR BARU: Mode Dashboard
-    mode = st.radio(
-        "Pilih Mode Tampilan",
-        ["Monitoring Antam 100g", "Detail Vendor (Lama)"]
-    )
-    
-    st.divider()
-    
-    if mode == "Detail Vendor (Lama)":
-        source = st.selectbox(
-            "Pilih Sumber Data",
-            ["StarGold", "Galeri24", "Aneka Logam", "HRTA", "IndoGold", "Hakabe Gold", "Agung Jewellery"]
-        )
-    
-    refresh = st.button("🔄 Tarik / Refresh Data", use_container_width=True, type="primary")
-    
-    # Jalankan uploader sidebar
-    render_uploader_sidebar()
+st.sidebar.title("⚙️ Kontrol")
+
+source = st.sidebar.radio(
+    "Sumber Data",
+    [
+        "📊 Perbandingan Antam 100g",
+        "Galeri24",
+        "StarGold",
+        "AnekaLogam",
+        "HRTA",
+        "IndoGold",
+        "HK Logam Mulia",
+        "Agung Jewellery",
+    ],
+    index=0,
+)
+
+st.sidebar.divider()
+render_uploader_sidebar()
 
 # =========================================================
 # MAIN CONTENT
 # =========================================================
 st.title("📊 Monitoring Harga Emas")
 
-tab1, tab2 = st.tabs(["🕒 Harga Realtime", "📈 Grafik Histori"])
-
-with tab1:
-    if refresh:
-        st.cache_data.clear()
-
+if st.button("🚀 Ambil Data Sekarang", use_container_width=True, type="primary"):
     try:
-        if mode == "Monitoring Antam 100g":
-            st.subheader("🏆 Perbandingan Khusus: Antam 100 Gram")
-            with st.spinner("Menarik data dari seluruh vendor..."):
-                all_results = []
-                
-                # List fungsi tarik data
-                # 1. StarGold (File)
-                df_sg, _ = parse_stargold("")
-                if not df_sg.empty: all_results.append(df_sg)
-                
-                # 2. Galeri24 (Live)
-                df_g24, _ = parse_galeri24(fetch_html(URL_GALERI24))
-                if not df_g24.empty: all_results.append(df_g24)
-                
-                # 3. Hakabe (Live)
-                df_hk, _ = parse_hakabegold(fetch_html(URL_HAKABEGOLD))
-                if not df_hk.empty: all_results.append(df_hk)
-                
-                # 4. Aneka Logam (Live)
-                df_al, _ = parse_anekalogam(fetch_html(URL_ANEKALOGAM))
-                if not df_al.empty: all_results.append(df_al)
-
-                if all_results:
-                    master_df = pd.concat(all_results, ignore_index=True)
-                    # Filter: Vendor mengandung ANTAM & Berat 100
-                    mask = (master_df['vendor'].str.contains('ANTAM', case=False, na=False)) & (master_df['weight_g'] == 100)
-                    df_100 = master_df[mask].copy()
+        if source == "📊 Perbandingan Antam 100g":
+            with st.spinner("Menyelaraskan harga Antam 100g dari seluruh toko..."):
+                df_comp = get_all_antam_100g()
+                if not df_comp.empty:
+                    # Urutkan harga termurah
+                    df_comp = df_comp.sort_values("Harga Jual", ascending=True).reset_index(drop=True)
+                    df_comp.index += 1
                     
-                    if not df_100.empty:
-                        df_100 = df_100.sort_values("sell_idr", ascending=True)
-                        
-                        # Metrics
-                        c1, c2, c3 = st.columns(3)
-                        best = df_100.iloc[0]
-                        c1.metric("Harga Termurah", format_rp(best['sell_idr']), best['vendor'])
-                        c2.metric("Rata-rata Pasar", format_rp(df_100['sell_idr'].mean()))
-                        c3.metric("Jumlah Vendor", f"{len(df_100)} Toko")
-
-                        st.divider()
-                        
-                        # Tabel
-                        disp = pd.DataFrame({
-                            "Vendor": df_100["vendor"],
-                            "Harga Jual": df_100["sell_idr"].apply(format_rp),
-                            "Harga Buyback": df_100["buyback_idr"].apply(format_rp),
-                            "Spread": (df_100["sell_idr"] - df_100["buyback_idr"]).apply(format_rp)
-                        })
-                        st.table(disp)
-                    else:
-                        st.warning("Data Antam 100g belum tersedia di sumber yang ditarik.")
+                    st.subheader("🏆 Tabel Perbandingan Antam 100 gr")
+                    
+                    # Format tabel sesuai permintaan Anda
+                    display_table = pd.DataFrame({
+                        "No": df_comp.index,
+                        "Nama Toko Emas": df_comp["Nama Toko Emas"],
+                        "Harga Jual": df_comp["Harga Jual"].apply(format_rp),
+                        "Harga Beli": df_comp["Harga Beli"].apply(format_rp)
+                    })
+                    st.table(display_table)
+                    
+                    # Info harga terbaik
+                    best = df_comp.iloc[0]
+                    st.success(f"Harga Termurah: **{format_rp(best['Harga Jual'])}** di **{best['Nama Toko Emas']}**")
                 else:
-                    st.error("Gagal mendapatkan data.")
+                    st.warning("Data Antam 100g tidak ditemukan di semua sumber.")
 
         else:
-            # === LOGIKA LAMA (Detail Vendor) ===
-            df = pd.DataFrame()
-            update_label = ""
+            # === LOGIKA DETAIL VENDOR (LAMA) ===
+            with st.spinner(f"Mengambil data {source}..."):
+                df = pd.DataFrame()
+                update_label = ""
+                
+                # Pemetaan URL (sesuai app.py lama Anda)
+                URLS = {
+                    "Galeri24": URL_GALERI24,
+                    "StarGold": URL_STARGOLD,
+                    "AnekaLogam": URL_ANEKALOGAM,
+                    "HRTA": URL_HRTA,
+                    "IndoGold": URL_INDOGOLD,
+                    "HK Logam Mulia": URL_HAKABEGOLD,
+                }
 
-            if source == "StarGold":
-                df, update_label = parse_stargold("") 
-            elif source == "Galeri24":
-                df, update_label = parse_galeri24(fetch_html(URL_GALERI24))
-            elif source == "Aneka Logam":
-                df, update_label = parse_anekalogam(fetch_html(URL_ANEKALOGAM))
-            elif source == "HRTA":
-                df, update_label = parse_hrta(fetch_html(URL_HRTA))
-            elif source == "IndoGold":
-                df, update_label = parse_indogold(fetch_html(URL_INDOGOLD))
-            elif source == "Hakabe Gold":
-                df, update_label = parse_hakabegold(fetch_html(URL_HAKABEGOLD))
-            elif source == "Agung Jewellery":
-                df, update_label = parse_agungjewellery()
+                if source == "HK Logam Mulia":
+                    df, update_label = parse_hakabegold()
+                elif source == "StarGold":
+                    df, update_label = parse_stargold("")
+                elif source == "Agung Jewellery":
+                    df, update_label = parse_agungjewellery()
+                elif source == "HRTA":
+                    df, update_label = parse_hrta("")
+                else:
+                    html = fetch_html(URLS.get(source, ""))
+                    if source == "Galeri24": df, update_label = parse_galeri24(html)
+                    elif source == "AnekaLogam": df, update_label = parse_anekalogam(html)
+                    elif source == "IndoGold": df, update_label = parse_indogold(html)
 
-            if not df.empty:
-                st.info(f"💡 {update_label}")
-                vendors = df["vendor"].unique()
-                for v in vendors:
-                    st.subheader(f"🏢 {v}")
-                    sub = df[df["vendor"] == v]
+            if df is not None and not df.empty:
+                st.subheader(update_label)
+                for vendor in df["vendor"].unique():
+                    st.markdown(f"### {vendor}")
+                    sub = df[df["vendor"] == vendor].copy()
+                    if "weight_g" in sub.columns: sub = sub.sort_values("weight_g")
+                    
                     display = pd.DataFrame({
                         "Berat": sub["weight_g"].apply(lambda x: f"{x:g} gr"),
                         "Harga Jual": sub["sell_idr"].apply(format_rp),
@@ -172,26 +188,7 @@ with tab1:
                     })
                     st.table(display)
             else:
-                st.warning(f"Data kosong: {update_label}")
+                st.warning("Data kosong.")
 
     except Exception as e:
-        st.error(f"Kesalahan: {e}")
-
-with tab2:
-    st.subheader("📈 Tren Harga Antam 100g")
-    df_hist = get_full_history()
-    if not df_hist.empty:
-        # Filter histori khusus 100g antam untuk grafik default
-        df_hist_100 = df_hist[
-            (df_hist['vendor'].str.contains('ANTAM', case=False, na=False)) & 
-            (df_hist['weight_g'] == 100)
-        ]
-        
-        if not df_hist_100.empty:
-            fig = px.line(df_hist_100, x="timestamp", y="sell_idr", color="vendor", markers=True)
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with st.expander("Lihat Log Semua Data"):
-            st.dataframe(df_hist, use_container_width=True)
-    else:
-        st.info("Belum ada data histori.")
+        st.error(f"Terjadi kesalahan fatal: {e}")
