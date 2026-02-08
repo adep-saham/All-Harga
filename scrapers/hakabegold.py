@@ -1,79 +1,87 @@
 import pandas as pd
 import requests
+import base64
 import re
 from io import BytesIO
 from typing import Tuple
 
 # =========================================================
-# LINK BERSIH (HASIL DECODE DARI LINK PANJANG ANDA)
+# LINK BERSIH (HASIL DECODE DARI TOKEN 'REDEEM' ANDA)
 # =========================================================
-CLEAN_LINK = "https://1drv.ms/x/c/f82ea6cd27a31b67/UQRnG6MnzaYuIID4agAAAAAAJmymdJnSywKmuw"
+# Ini adalah link asli yang tersembunyi di balik link panjang tadi.
+# Link ini VALID dan bisa diproses oleh API.
+TARGET_LINK = "https://1drv.ms/x/c/f82ea6cd27a31b67/UQRnG6MnzaYuIID4agAAAAAAJmymdJnSywKmuw"
 
 # Dummy variable
-URL_HAKABEGOLD = CLEAN_LINK
+URL_HAKABEGOLD = TARGET_LINK
 
-def get_direct_download_url(short_link):
+def get_api_download_link(share_url):
     """
-    Mengubah link pendek 1drv.ms menjadi link download file (.xlsx)
-    dengan cara mengikuti redirect dan memanipulasi URL akhir.
+    Menggunakan OneDrive API v1.0 untuk mengubah Link Share menjadi Link Download Binary.
+    Ini adalah cara paling resmi dan stabil untuk bypass Web View.
     """
     try:
-        session = requests.Session()
+        # 1. Encode URL ke Base64
+        base64_value = base64.b64encode(share_url.encode("utf-8")).decode("utf-8")
+        
+        # 2. Format sesuai standar API OneDrive (URL-Safe)
+        #    a. Tambah prefix 'u!'
+        #    b. Hapus padding '=' di akhir
+        #    c. Ganti '/' jadi '_' dan '+' jadi '-'
+        encoded_url = "u!" + base64_value.rstrip("=").replace("/", "_").replace("+", "-")
+        
+        # 3. Panggil API
+        # Endpoint ini akan otomatis redirect ke file .xlsx aslinya
+        return f"https://api.onedrive.com/v1.0/shares/{encoded_url}/root/content"
+
+    except Exception as e:
+        print(f"Error encoding link: {e}")
+        return None
+
+def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
+    try:
+        # LANGKAH 1: Dapatkan Link Download dari API
+        api_url = get_api_download_link(TARGET_LINK)
+        
+        if not api_url:
+            return pd.DataFrame(), "Gagal memproses link OneDrive."
+
+        # LANGKAH 2: Download File
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         
-        # 1. Ikuti Redirect (PENTING: allow_redirects=True)
-        # Kita biarkan OneDrive melempar kita ke alamat aslinya
-        response = session.get(short_link, headers=headers, timeout=30, allow_redirects=True)
-        final_url = response.url
+        # Timeout 60 detik
+        response = requests.get(api_url, headers=headers, timeout=60)
         
-        # 2. Manipulasi URL Akhir
-        # Jika URL mengandung 'onedrive.live.com', ubah mode jadi download
-        if "onedrive.live.com" in final_url:
-            # Ganti '/view.aspx', '/edit.aspx', atau '/redir.aspx' menjadi '/download'
-            download_url = re.sub(r"/(view|edit|redir|embed)\.aspx", "/download", final_url)
-            # Bersihkan parameter query yang tidak perlu
-            return download_url.split("?")[0] + "?download=1"
-            
-        # Fallback: Jika masih di 1drv.ms, tempel parameter download
-        return short_link + "?download=1"
-
-    except Exception as e:
-        print(f"Error resolving link: {e}")
-        return short_link
-
-def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
-    try:
-        # LANGKAH 1: Dapatkan Link Download Asli
-        download_url = get_direct_download_url(CLEAN_LINK)
-        
-        # LANGKAH 2: Download File
-        headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(download_url, headers=headers, timeout=60)
-        
+        # API OneDrive jika sukses biasanya redirect (302) lalu memberi file (200)
         if response.status_code != 200:
-            return pd.DataFrame(), f"Gagal Akses (Code: {response.status_code})"
+            return pd.DataFrame(), f"Gagal Akses API (Code: {response.status_code}). Token mungkin expired."
 
-        # LANGKAH 3: Baca Excel
+        # LANGKAH 3: Validasi Konten (Anti HTML)
+        content_type = response.headers.get("Content-Type", "").lower()
+        if "text/html" in content_type:
+             return pd.DataFrame(), "Gagal. API mengembalikan halaman Login (Link butuh autentikasi ulang)."
+
+        # LANGKAH 4: Baca Excel
         try:
             xls_data = BytesIO(response.content)
-            # Baca semua sheet (karena data ada di Sheet2)
+            # Baca semua sheet tanpa header
             xls = pd.read_excel(xls_data, sheet_name=None, header=None, engine='openpyxl')
         except Exception:
-            return pd.DataFrame(), "Link valid, tapi format file bukan Excel (.xlsx)."
+            return pd.DataFrame(), "Format file rusak atau bukan Excel."
 
         final_df = pd.DataFrame()
         label = "HK Logam Mulia"
         buyback_val = 0
 
-        # LANGKAH 4: Scanning Data
+        # LANGKAH 5: Scanning Data (Mencari Tabel Harga)
         for sheet_name, df in xls.items():
             # Scan 50 baris pertama
             for i, row in df.head(50).iterrows():
                 row_text = " ".join(row.astype(str).lower())
                 
-                # Ciri-ciri tabel: ada kata "berat" dan "end user"
+                # KATA KUNCI: "berat" dan "end user"
                 if "berat" in row_text and "end user" in row_text:
                     
                     df.columns = df.iloc[i].astype(str).str.lower().str.strip()
