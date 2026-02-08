@@ -1,71 +1,76 @@
 from __future__ import annotations
 from datetime import datetime
 import pandas as pd
-import cloudscraper
 from bs4 import BeautifulSoup
+from curl_cffi import requests # Library pintar pengganti requests biasa
 
 URL_STARGOLD = "https://stargold.id/price/"
 
 def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
     """
-    Scraper presisi menggunakan cloudscraper untuk menembus 'Connection Reset'.
+    Menggunakan curl_cffi untuk meniru TLS Fingerprint Chrome asli.
+    Sangat ampuh melewati blokir 'Connection Reset'.
     """
     try:
-        # 1. Fetching Data
         if not html:
-            # Membuat scraper yang meniru browser Chrome/Windows
-            scraper = cloudscraper.create_scraper(
-                browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
+            # Skenario 'Smarter': Menyamar sebagai Chrome 110 secara total
+            response = requests.get(
+                URL_STARGOLD, 
+                impersonate="chrome110", # Ini kunci rahasianya
+                timeout=30,
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                    "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8",
+                }
             )
-            response = scraper.get(URL_STARGOLD, timeout=30)
+            response.raise_for_status()
             html = response.text
 
         soup = BeautifulSoup(html, "html.parser")
         all_data = []
 
-        # 2. Parsing Tabel (Sesuai file htlm.txt: class 'table-sm')
+        # Cari tabel dengan class 'table-sm' sesuai htlm.txt Anda
         tables = soup.find_all("table", class_="table-sm")
         
         for table in tables:
             rows = table.find_all("tr")
             for row in rows:
                 cols = row.find_all("td")
-                
-                # Sesuai struktur: [0]=Berat, [1]=Harga Jual, [2]=Buyback
                 if len(cols) >= 3:
                     raw_weight = cols[0].get_text(strip=True).lower()
                     raw_sell = cols[1].get_text(strip=True)
                     raw_buyback = cols[2].get_text(strip=True)
 
-                    # Filter baris yang berisi data emas (ada teks 'gr')
+                    # Identifikasi baris data emas (mengandung 'gr')
                     if "gr" in raw_weight:
                         try:
-                            # Bersihkan Berat: '0,1 gr' -> 0.1
+                            # 1. Bersihkan Berat (0,1 gr -> 0.1)
                             w_val = raw_weight.replace("gr", "").replace(",", ".").strip()
                             
-                            # Bersihkan Harga: Ambil angka saja (membuang Rp. dan titik)
+                            # 2. Bersihkan Harga (Rp. 367.400 -> 367400)
+                            # Gunakan filter angka agar tidak gagal jika format Rp berubah
                             s_val = "".join(filter(str.isdigit, raw_sell))
                             b_val = "".join(filter(str.isdigit, raw_buyback))
 
-                            all_data.append({
-                                "vendor": "STARGOLD",
-                                "weight_g": float(w_val),
-                                "sell_idr": int(s_val) if s_val else 0,
-                                "buyback_idr": int(b_val) if b_val else 0
-                            })
-                        except Exception:
+                            if s_val:
+                                all_data.append({
+                                    "vendor": "STARGOLD",
+                                    "weight_g": float(w_val),
+                                    "sell_idr": int(s_val),
+                                    "buyback_idr": int(b_val) if b_val else 0
+                                })
+                        except:
                             continue
 
         if not all_data:
-            return pd.DataFrame(), "Data tidak ditemukan (Struktur HTML mungkin berubah)."
+            return pd.DataFrame(), "Data kosong atau struktur berubah."
 
-        # 3. Finalisasi DataFrame
         df = pd.DataFrame(all_data)
-        df = df.drop_duplicates(subset=["weight_g", "sell_idr"])
-        df = df.sort_values("weight_g").reset_index(drop=True)
+        # Hapus duplikat & urutkan rapi sesuai app.py
+        df = df.drop_duplicates(subset=["weight_g", "sell_idr"]).sort_values("weight_g").reset_index(drop=True)
         
         ts = datetime.now().strftime("%d/%m/%y %H:%M:%S")
-        return df, f"StarGold (Live) - {ts}"
+        return df, f"StarGold (Impersonate Chrome) - {ts}"
 
     except Exception as e:
-        return pd.DataFrame(), f"Error Scraping: {str(e)}"
+        return pd.DataFrame(), f"Gagal Akali Blokir: {str(e)}"
