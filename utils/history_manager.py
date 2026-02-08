@@ -3,44 +3,46 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
 
-# Masukkan URL Google Sheet Anda di sini atau di Secrets
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1hI-pNUNqO2aGuLfIyKuT7zFAI43iKqC19RIKQBtlrck/edit?usp=sharing"
-
-def save_to_history(df_new):
-    """Menyimpan data ke Google Sheets (Append)."""
-    if df_new.empty:
-        return
+def save_to_history(df_new, worksheet_name="Summary_100g"):
+    """Menyimpan data ke tab spesifik di Google Sheets."""
+    if df_new is None or df_new.empty:
+        return False
     
     try:
-        # Inisialisasi koneksi
         conn = st.connection("gsheets", type=GSheetsConnection)
         
-        # Ambil data lama
-        df_old = conn.read(spreadsheet=SHEET_URL)
+        # 1. Coba baca data lama dari tab spesifik
+        try:
+            # Menggunakan parameter worksheet untuk memilih tab
+            df_old = conn.read(worksheet=worksheet_name)
+        except:
+            # Jika tab belum ada atau kosong, buat dataframe kosong
+            df_old = pd.DataFrame(columns=['timestamp', 'vendor', 'weight_g', 'sell_idr', 'buyback_idr'])
         
-        # Siapkan data baru dengan timestamp
-        df_new_to_save = df_new.copy()
-        df_new_to_save['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 2. Siapkan data baru
+        df_to_save = df_new.copy()
+        df_to_save['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Pastikan urutan kolom sama
+        if 'vendor' not in df_to_save.columns and 'Nama Toko Emas' in df_to_save.columns:
+            df_to_save['vendor'] = df_to_save['Nama Toko Emas']
+            
         cols = ['timestamp', 'vendor', 'weight_g', 'sell_idr', 'buyback_idr']
-        df_new_to_save = df_new_to_save[cols]
+        df_to_save = df_to_save[cols]
         
-        # Gabungkan
-        df_final = pd.concat([df_old, df_new_to_save], ignore_index=True)
+        # 3. Gabungkan
+        df_final = pd.concat([df_old, df_to_save], ignore_index=True)
         
-        # Update Google Sheets
-        conn.update(spreadsheet=SHEET_URL, data=df_final)
+        # 4. Update ke tab yang dipilih
+        conn.update(worksheet=worksheet_name, data=df_final)
         return True
     except Exception as e:
-        st.error(f"Gagal simpan ke Google Sheets: {e}")
+        st.error(f"Gagal Simpan ke {worksheet_name}: {e}")
         return False
 
-def get_full_history():
-    """Mengambil seluruh data dari Google Sheets untuk grafik."""
+def get_full_history(worksheet_name="Summary_100g"):
+    """Mengambil data dari tab spesifik untuk grafik."""
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
-        df = conn.read(spreadsheet=SHEET_URL)
-        return df
-    except Exception:
+        return conn.read(worksheet=worksheet_name)
+    except:
         return pd.DataFrame()
