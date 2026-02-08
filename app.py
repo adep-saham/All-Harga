@@ -4,7 +4,7 @@ import pandas as pd
 from io import BytesIO
 
 # =========================================================
-# 1. IMPORT SCRAPERS
+# IMPORT SCRAPERS
 # =========================================================
 from scrapers.galeri24 import parse_galeri24, URL_GALERI24
 from scrapers.stargold import parse_stargold, URL_STARGOLD
@@ -12,9 +12,10 @@ from scrapers.anekalogam import parse_anekalogam, URL_ANEKALOGAM
 from scrapers.hrta import parse_hrta, URL_HRTA
 from scrapers.indogold import parse_indogold, URL_INDOGOLD
 from scrapers.hakabegold import parse_hakabegold, URL_HAKABEGOLD
+from scrapers.agungjewellery import parse_agungjewellery
 
 # =========================================================
-# 2. PAGE CONFIG
+# PAGE CONFIG
 # =========================================================
 st.set_page_config(
     page_title="All Harga Emas",
@@ -22,16 +23,15 @@ st.set_page_config(
 )
 
 # =========================================================
-# 3. HELPERS
+# HELPERS
 # =========================================================
 def format_rp(x) -> str:
     try:
-        x = int(x)
-        return f"Rp{x:,}".replace(",", ".")
+        return f"Rp{int(x):,}".replace(",", ".")
     except:
         return "Rp0"
 
-@st.cache_data(ttl=180)
+@st.cache_data(ttl=300)
 def fetch_html(url: str) -> str:
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -42,7 +42,7 @@ def fetch_html(url: str) -> str:
         return ""
 
 # =========================================================
-# 4. UI
+# UI
 # =========================================================
 st.title("📊 Monitoring Harga Emas")
 
@@ -54,9 +54,10 @@ source = st.sidebar.radio(
         "AnekaLogam",
         "HRTA",
         "IndoGold",
-        "HK Logam Mulia"
+        "HK Logam Mulia",
+        "Agung Jewellery"
     ],
-    index=5
+    index=6
 )
 
 URLS = {
@@ -65,14 +66,15 @@ URLS = {
     "AnekaLogam": URL_ANEKALOGAM,
     "HRTA": URL_HRTA,
     "IndoGold": URL_INDOGOLD,
-    "HK Logam Mulia": URL_HAKABEGOLD,  # hanya untuk ditampilkan
+    "HK Logam Mulia": URL_HAKABEGOLD,
+    "Agung Jewellery": "https://agungjewellery.com/harga-lm-2/",
 }
 
 current_url = URLS.get(source, "")
 st.caption(f"Target: {current_url}")
 
 # =========================================================
-# 5. ACTION
+# ACTION
 # =========================================================
 if st.button("🚀 Ambil Data"):
     try:
@@ -80,9 +82,13 @@ if st.button("🚀 Ambil Data"):
             df = pd.DataFrame()
             update_label = ""
 
-            # ===== HK LOGAM MULIA (GOOGLE SHEETS – NO HTML) =====
+            # ===== GOOGLE SHEETS BASED =====
             if source == "HK Logam Mulia":
                 df, update_label = parse_hakabegold()
+
+            # ===== AGUNG JEWELLERY =====
+            elif source == "Agung Jewellery":
+                df, update_label = parse_agungjewellery()
 
             # ===== HRTA =====
             elif source == "HRTA":
@@ -104,7 +110,7 @@ if st.button("🚀 Ambil Data"):
                         df, update_label = parse_indogold(html)
 
         # =====================================================
-        # 6. DISPLAY RESULT
+        # DISPLAY RESULT
         # =====================================================
         if df is not None and not df.empty:
             st.subheader(update_label)
@@ -127,7 +133,7 @@ if st.button("🚀 Ambil Data"):
                 st.table(display)
 
             # =================================================
-            # 7. DOWNLOAD
+            # DOWNLOAD
             # =================================================
             st.divider()
             c1, c2 = st.columns(2)
