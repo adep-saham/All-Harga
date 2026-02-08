@@ -18,28 +18,37 @@ from scrapers.agungjewellery import parse_agungjewellery
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="All Harga Emas",
+    page_title="Monitoring Harga Emas",
     layout="wide"
 )
 
 # =========================================================
 # HELPERS
 # =========================================================
-def format_rp(x) -> str:
+def format_rp(x):
     try:
         return f"Rp{int(x):,}".replace(",", ".")
-    except:
+    except Exception:
         return "Rp0"
+
 
 @st.cache_data(ttl=300)
 def fetch_html(url: str) -> str:
+    """
+    Generic HTML fetcher.
+    NOTE: TIDAK DIPAKAI untuk StarGold
+    """
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+        }
         r = requests.get(url, headers=headers, timeout=30)
         r.raise_for_status()
-        return r.text
-    except:
+        return r.text or ""
+    except Exception:
         return ""
+
 
 # =========================================================
 # UI
@@ -55,9 +64,9 @@ source = st.sidebar.radio(
         "HRTA",
         "IndoGold",
         "HK Logam Mulia",
-        "Agung Jewellery"
+        "Agung Jewellery",
     ],
-    index=6
+    index=1,
 )
 
 URLS = {
@@ -82,19 +91,33 @@ if st.button("🚀 Ambil Data"):
             df = pd.DataFrame()
             update_label = ""
 
-            # ===== GOOGLE SHEETS BASED =====
+            # =================================================
+            # GOOGLE SHEETS
+            # =================================================
             if source == "HK Logam Mulia":
                 df, update_label = parse_hakabegold()
 
-            # ===== AGUNG JEWELLERY =====
+            # =================================================
+            # STAR GOLD (⚠️ AMBIL SENDIRI, JANGAN fetch_html)
+            # =================================================
+            elif source == "StarGold":
+                df, update_label = parse_stargold(None)
+
+            # =================================================
+            # AGUNG JEWELLERY
+            # =================================================
             elif source == "Agung Jewellery":
                 df, update_label = parse_agungjewellery()
 
-            # ===== HRTA =====
+            # =================================================
+            # HRTA
+            # =================================================
             elif source == "HRTA":
                 df, update_label = parse_hrta("")
 
-            # ===== HTML BASED SCRAPERS =====
+            # =================================================
+            # HTML BASED (LAINNYA)
+            # =================================================
             else:
                 html = fetch_html(current_url)
                 if not html:
@@ -102,8 +125,6 @@ if st.button("🚀 Ambil Data"):
                 else:
                     if source == "Galeri24":
                         df, update_label = parse_galeri24(html)
-                    elif source == "StarGold":
-                        df, update_label = parse_stargold(html)
                     elif source == "AnekaLogam":
                         df, update_label = parse_anekalogam(html)
                     elif source == "IndoGold":
@@ -127,7 +148,7 @@ if st.button("🚀 Ambil Data"):
                     "Berat": sub["weight_g"].apply(lambda x: f"{x:g} gr"),
                     "Harga Jual": sub["sell_idr"].apply(format_rp),
                     "Harga Buyback": sub["buyback_idr"].apply(format_rp),
-                    "Stok": sub.get("stock", "Ready")
+                    "Stok": sub.get("stock", "Ready"),
                 })
 
                 st.table(display)
@@ -144,7 +165,7 @@ if st.button("🚀 Ambil Data"):
                     df.to_csv(index=False).encode("utf-8-sig"),
                     f"{source}.csv",
                     "text/csv",
-                    use_container_width=True
+                    use_container_width=True,
                 )
 
             with c2:
@@ -156,7 +177,7 @@ if st.button("🚀 Ambil Data"):
                     out.getvalue(),
                     f"{source}.xlsx",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
+                    use_container_width=True,
                 )
 
         else:
