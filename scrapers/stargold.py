@@ -3,88 +3,89 @@ import os
 import pandas as pd
 from datetime import datetime
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
 
-# URL Sasaran
+# URL Sasaran (Kekal untuk rujukan app.py)
 URL_STARGOLD = "https://stargold.id/price/"
 
 def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
     """
-    Scraper Versi 'Browser Simulation' (Playwright):
-    1. Meniru manusia membuka browser untuk melepasi firewall.
-    2. Jika gagal, automatik membaca file 'source web.txt' sebagai sandaran.
+    Versi 'Super Radar': 
+    Sangat agresif mencari fail TXT anda dan membedah kod sumber manual.
     """
     final_html = html
-    source_label = "Live Browser"
+    source_label = "Live Web"
 
-    # --- TAHAP 1: PENGAMBILAN DATA (LIVE BROWSER) ---
+    # --- TAHAP 1: RADAR PENCARIAN FAIL (LALUAN MANUSIA) ---
     if not final_html or len(final_html) < 500:
-        try:
-            with sync_playwright() as p:
-                # Membuka pelayar tanpa tetingkap (headless)
-                browser = p.chromium.launch(headless=True)
-                # Meniru identiti Chrome/Windows yang asli
-                context = browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                )
-                page = context.new_page()
-                
-                # Pergi ke URL dan tunggu sehingga rangkaian stabil (network idle)
-                page.goto(URL_STARGOLD, wait_until="networkidle", timeout=60000)
-                
-                # Mengambil kod sumber (View Source) secara automatik
-                final_html = page.content()
-                browser.close()
-        except Exception as e:
-            # --- TAHAP 2: JALUR SANDARAN (FILE TXT) ---
-            # Jika browser gagal (blokir IP), cari file manual anda
-            current_dir = os.getcwd()
-            target_files = ["source web.txt", "htlm.txt"]
-            
-            found_path = None
-            for f_name in target_files:
-                p_path = os.path.join(current_dir, f_name)
-                if os.path.exists(p_path):
-                    found_path = p_path
-                    break
-            
-            if found_path:
-                with open(found_path, "r", encoding="utf-8") as f:
-                    final_html = f.read()
-                source_label = f"Offline ({os.path.basename(found_path)})"
-            else:
-                return pd.DataFrame(), f"Gagal: Browser disekat & file TXT tidak dijumpai."
+        # Nama fail yang mungkin anda gunakan
+        target_files = ["source web.txt", "htlm.txt", "source_web.txt"]
+        
+        # Lokasi Radar: Folder utama, folder scrapers, dan folder kerja semasa
+        script_dir = os.path.dirname(os.path.abspath(__file__)) 
+        root_dir = os.path.dirname(script_dir)                 
+        work_dir = os.getcwd()                                 
+        
+        paths_to_scan = [work_dir, root_dir, script_dir]
+        
+        found_content = ""
+        found_file_name = ""
 
-    # --- TAHAP 3: EKSTRAKSI DATA (BEAUTIFULSOUP) ---
+        for directory in paths_to_scan:
+            for filename in target_files:
+                full_path = os.path.join(directory, filename)
+                if os.path.exists(full_path):
+                    try:
+                        with open(full_path, "r", encoding="utf-8") as f:
+                            found_content = f.read()
+                            found_file_name = filename
+                        break
+                    except:
+                        continue
+            if found_content: break
+
+        if found_content:
+            final_html = found_content
+            source_label = f"Offline ({found_file_name})"
+        else:
+            # Jika masih gagal, beri maklumat folder supaya user tahu di mana nak letak fail
+            files_seen = ", ".join(os.listdir(work_dir)[:10])
+            return pd.DataFrame(), f"Gagal: Fail TXT tidak dijumpai. Letakkan 'source web.txt' di {work_dir}. Fail sedia ada: [{files_seen}]"
+
+    # --- TAHAP 2: EKSTRAKSI DATA (TEKNIK VIEW-SOURCE) ---
     try:
         soup = BeautifulSoup(final_html, "html.parser")
         all_data = []
 
-        # Mencari tabel dengan class table-sm (seperti dalam source web.txt anda)
+        # Mencari semua jadual (Stargold menggunakan class 'table-sm')
         tables = soup.find_all("table", class_="table-sm")
         
         for table in tables:
             rows = table.find_all("tr")
             for row in rows:
                 cols = row.find_all("td")
+                
+                # Mengikut struktur fail anda: [0] Produk, [1] Jual, [2] Buyback
                 if len(cols) >= 3:
                     raw_name = cols[0].get_text(strip=True).lower()
                     raw_sell = cols[1].get_text(strip=True)
                     raw_buyback = cols[2].get_text(strip=True)
 
-                    # Hanya proses baris yang mengandungi berat 'gr'
+                    # Tapis baris yang mempunyai berat 'gr'
                     if "gr" in raw_name:
                         try:
-                            # Tentukan Vendor (Antam/UBS/Stargold)
+                            # 1. Kenal Pasti Vendor (Antam/UBS/Stargold)
                             vendor = "STARGOLD"
                             if "antam" in raw_name: vendor = "ANTAM"
                             elif "ubs" in raw_name: vendor = "UBS"
+                            elif "emaskita" in raw_name: vendor = "EMASKITA"
 
-                            # Bersihkan Berat: '0,5 gr' -> 0.5
+                            # 2. Bersihkan Berat (0,1 gr -> 0.1)
+                            # Tukar koma kepada titik untuk pengiraan Python
                             w_str = raw_name.replace("gr", "").replace(",", ".").strip()
+                            # Ambil angka terakhir (contoh: 'antam 1' jadi '1')
                             w_val = float(w_str.split()[-1])
 
-                            # Bersihkan Harga: Ambil angka sahaja
+                            # 3. Bersihkan Harga (Ambil digit sahaja)
                             s_val = "".join(filter(str.isdigit, raw_sell))
                             b_val = "".join(filter(str.isdigit, raw_buyback))
 
@@ -99,14 +100,15 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
                             continue
 
         if not all_data:
-            return pd.DataFrame(), f"Data kosong di {source_label}. Sila semak kandungan HTML."
+            return pd.DataFrame(), f"Data tidak dijumpai dalam {source_label}. Pastikan anda salin 'View Source' sepenuhnya."
 
+        # Tukar ke DataFrame dan susun
         df = pd.DataFrame(all_data)
         df = df.drop_duplicates(subset=["vendor", "weight_g", "sell_idr"])
         df = df.sort_values(["vendor", "weight_g"]).reset_index(drop=True)
         
-        ts = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        ts = datetime.now().strftime("%H:%M:%S")
         return df, f"StarGold ({source_label}) - {ts}"
 
     except Exception as e:
-        return pd.DataFrame(), f"Gagal Urai: {str(e)}"
+        return pd.DataFrame(), f"Ralat Urai: {str(e)}"
