@@ -4,83 +4,99 @@ import pandas as pd
 from datetime import datetime
 from bs4 import BeautifulSoup
 
-# PENTING: Variabel ini harus ada karena dipanggil oleh app.py
+# PENTING: Jangan hapus variabel ini karena di-import oleh app.py
 URL_STARGOLD = "https://stargold.id/price/"
 
 def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
     """
-    Parser cerdas untuk membaca data dari 'source web.txt' di Streamlit Cloud.
+    Parser 'Ultra-Flexible':
+    Mencari data di semua tabel tanpa bergantung pada nama class yang spesifik.
     """
     final_html = html
     source_label = "Live Web"
 
-    # --- RADAR PENCARIAN FILE ---
+    # --- 1. RADAR PENCARIAN FILE ---
     if not final_html or len(final_html) < 500:
-        # Nama file yang Anda upload ke GitHub
         target_file = "source web.txt"
+        # Cari di folder root Streamlit Cloud atau folder lokal
+        possible_paths = [
+            os.path.join("/mount/src/all-harga", target_file),
+            target_file,
+            os.path.join(os.getcwd(), target_file)
+        ]
         
-        # Lokasi standard di Streamlit Cloud
-        root_path = "/mount/src/all-harga"
-        full_path = os.path.join(root_path, target_file)
+        for path in possible_paths:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    final_html = f.read()
+                source_label = f"Offline ({target_file})"
+                break
         
-        # Cek apakah file ada
-        if os.path.exists(full_path):
-            with open(full_path, "r", encoding="utf-8") as f:
-                final_html = f.read()
-            source_label = f"Offline ({target_file})"
-        elif os.path.exists(target_file):
-            with open(target_file, "r", encoding="utf-8") as f:
-                final_html = f.read()
-            source_label = f"Offline ({target_file})"
-        else:
+        if not final_html:
             return pd.DataFrame(), f"Gagal: File '{target_file}' tidak ditemukan di GitHub."
 
-    # --- EKSTRAKSI DATA ---
+    # --- 2. EKSTRAKSI DATA (PARSER TANGGUH) ---
     try:
         soup = BeautifulSoup(final_html, "html.parser")
         all_data = []
 
-        # Ambil tabel harga
-        tables = soup.find_all("table", class_="table-sm")
+        # Ambil SEMUA tabel yang ada, jangan cuma yang punya class 'table-sm'
+        tables = soup.find_all("table")
         
         for table in tables:
             rows = table.find_all("tr")
             for row in rows:
-                cols = row.find_all("td")
-                if len(cols) >= 3:
-                    raw_name = cols[0].get_text(strip=True).lower()
-                    raw_sell = cols[1].get_text(strip=True)
-                    raw_buyback = cols[2].get_text(strip=True)
-
+                # Cari semua sel (td atau th)
+                cols = row.find_all(["td", "th"])
+                
+                # Pastikan ada minimal 2 atau 3 kolom (Berat & Harga Jual)
+                if len(cols) >= 2:
+                    raw_name = cols[0].get_text(" ", strip=True).lower()
+                    
+                    # Cek apakah baris ini berisi data emas (ada kata 'gr')
                     if "gr" in raw_name:
                         try:
-                            # Tentukan Vendor
+                            # Tentukan Vendor secara cerdas
                             vendor = "STARGOLD"
                             if "antam" in raw_name: vendor = "ANTAM"
                             elif "ubs" in raw_name: vendor = "UBS"
+                            elif "emaskita" in raw_name: vendor = "EMASKITA"
 
-                            # Bersihkan Berat (0,1 gr -> 0.1)
-                            w_str = raw_name.replace("gr", "").replace(",", ".").strip()
-                            w_val = float(w_str.split()[-1])
+                            # 1. Ambil Berat: Ambil angka sebelum 'gr'
+                            # Contoh: 'antam 0,5 gr' -> ambil '0,5'
+                            w_part = raw_name.split("gr")[0].strip().split()[-1]
+                            weight_val = float(w_part.replace(",", "."))
 
-                            # Bersihkan Harga
-                            s_val = "".join(filter(str.isdigit, raw_sell))
-                            b_val = "".join(filter(str.isdigit, raw_buyback))
+                            # 2. Ambil Harga Jual (Kolom ke-2)
+                            sell_text = cols[1].get_text(strip=True)
+                            sell_val = "".join(filter(str.isdigit, sell_text))
 
-                            if s_val:
+                            # 3. Ambil Harga Buyback (Kolom ke-3 jika ada)
+                            buyback_val = 0
+                            if len(cols) >= 3:
+                                bb_text = cols[2].get_text(strip=True)
+                                bb_val_str = "".join(filter(str.isdigit, bb_text))
+                                buyback_val = int(bb_val_str) if bb_val_str else 0
+
+                            if sell_val:
                                 all_data.append({
                                     "vendor": vendor,
-                                    "weight_g": w_val,
-                                    "sell_idr": int(s_val),
-                                    "buyback_idr": int(b_val) if b_val else 0
+                                    "weight_g": weight_val,
+                                    "sell_idr": int(sell_val),
+                                    "buyback_idr": buyback_val
                                 })
-                        except: continue
+                        except:
+                            continue
 
         if not all_data:
-            return pd.DataFrame(), f"Data kosong. Periksa isi {target_file}."
+            # Jika masih kosong, coba cari di dalam elemen div (beberapa web pakai div, bukan table)
+            return pd.DataFrame(), "Data tetap kosong. Pastikan Anda meng-copy seluruh View Source (Ctrl+A)."
 
+        # --- 3. FINALISASI DATAFRAME ---
         df = pd.DataFrame(all_data)
+        # Hapus baris yang mungkin duplikat
         df = df.drop_duplicates(subset=["vendor", "weight_g", "sell_idr"])
+        # Urutkan berdasarkan vendor dan berat
         df = df.sort_values(["vendor", "weight_g"]).reset_index(drop=True)
         
         ts = datetime.now().strftime("%d/%m/%y %H:%M:%S")
