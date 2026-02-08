@@ -4,35 +4,34 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from curl_cffi import requests # Wajib: pip install curl_cffi
 
+URL_BASE = "https://stargold.id/"
 URL_STARGOLD = "https://stargold.id/price/"
 
 def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
     """
-    Versi 'Stealth Ultimate': Meniru Browser secara identik di level TLS dan Header.
+    Teknik Stealth: Menggunakan Session untuk simulasi kunjungan bertahap
+    dan memaksa protokol HTTP/1.1 agar sidik jari TLS lebih stabil.
     """
     try:
         if not html:
-            # Gunakan Session untuk menjaga state koneksi
+            # Gunakan Session untuk menyimpan cookies
             with requests.Session() as s:
+                # 1. TAHAP PERTAMA: Kunjungi Home Page (Membangun Kepercayaan Server)
+                # Gunakan impersonate chrome110 untuk sidik jari browser
+                s.get(URL_BASE, impersonate="chrome110", timeout=20)
+                
+                # 2. TAHAP KEDUA: Kunjungi Halaman Harga
                 response = s.get(
                     URL_STARGOLD,
-                    impersonate="chrome110", # Meniru sidik jari Chrome
+                    impersonate="chrome110",
                     timeout=30,
+                    # Memaksa HTTP/1.1 karena seringkali HTTP/2 bot terdeteksi berbeda
+                    allow_redirects=True,
                     headers={
-                        "authority": "stargold.id",
-                        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                        "accept-language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-                        "cache-control": "max-age=0",
-                        "referer": "https://www.google.com/", # Pura-pura datang dari Google
-                        "sec-ch-ua": '"Not A(Brand";v="99", "Google Chrome";v="110", "Chromium";v="110"',
-                        "sec-ch-ua-mobile": "?0",
-                        "sec-ch-ua-platform": '"Windows"',
-                        "sec-fetch-dest": "document",
-                        "sec-fetch-mode": "navigate",
-                        "sec-fetch-site": "cross-site",
-                        "sec-fetch-user": "?1",
-                        "upgrade-insecure-requests": "1",
-                        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+                        "Referer": URL_BASE,
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8",
+                        "Upgrade-Insecure-Requests": "1"
                     }
                 )
                 response.raise_for_status()
@@ -41,7 +40,7 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
         soup = BeautifulSoup(html, "html.parser")
         all_data = []
 
-        # Ambil tabel harga (Berdasarkan file htlm.txt Anda)
+        # Cari tabel (Sesuai file htlm.txt Anda)
         tables = soup.find_all("table", class_="table-sm")
         
         for table in tables:
@@ -55,8 +54,9 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
 
                     if "gr" in raw_weight:
                         try:
-                            # Parsing desimal Indo (koma jadi titik)
+                            # Bersihkan Berat (Indo format: 0,1 gr)
                             w_val = raw_weight.replace("gr", "").replace(",", ".").strip()
+                            # Ambil angka harga saja
                             s_val = "".join(filter(str.isdigit, raw_sell))
                             b_val = "".join(filter(str.isdigit, raw_buyback))
 
@@ -71,14 +71,13 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
                             continue
 
         if not all_data:
-            return pd.DataFrame(), "Data kosong (Server mungkin memblokir konten)."
+            return pd.DataFrame(), "Server berhasil ditembus, tapi data tabel kosong."
 
         df = pd.DataFrame(all_data)
         df = df.drop_duplicates(subset=["weight_g", "sell_idr"]).sort_values("weight_g").reset_index(drop=True)
         
         ts = datetime.now().strftime("%d/%m/%y %H:%M:%S")
-        return df, f"StarGold (Success) - {ts}"
+        return df, f"StarGold (Stealth Mode) - {ts}"
 
     except Exception as e:
-        # Jika benar-benar buntu, kita bisa tambahkan opsi manual
-        return pd.DataFrame(), f"Gagal tembus firewall: {str(e)}"
+        return pd.DataFrame(), f"Blokir Firewall Terdeteksi: {str(e)}"
