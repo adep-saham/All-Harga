@@ -4,102 +4,67 @@ import re
 from io import BytesIO
 from typing import Tuple
 
-# =========================================================
-# DATA KUNCI (DIBACA DARI FILE HTLM.TXT YANG ANDA KIRIM)
-# =========================================================
-# Kita melewati proses scraping website dan langsung pakai link yang tertanam di sana.
-CID = "f82ea6cd27a31b67"
-TOKEN = "UQRnG6MnzaYuIID4agAAAAAAAJmymdJnSywKmuw"
+# Ini link 'Share' resmi dari HK Logam Mulia (format baru 1drv.ms)
+# Link ini jika dibuka di browser akan menampilkan Web View.
+# TAPI, jika kita tambah '?download=1', dia akan memberikan filenya.
+LINK_DATA_LIVE = "https://1drv.ms/x/c/f82ea6cd27a31b67/UQRnG6MnzaYuIID4agAAAAAAJmymdJnSywKmuw?download=1"
 
-# Dummy variable agar app.py tidak error
-URL_HAKABEGOLD = f"https://1drv.ms/x/c/{CID}/{TOKEN}"
-
-def get_excel_content(cid, token) -> requests.Response:
-    """
-    Mencoba 3 metode download berbeda secara berurutan.
-    Jika satu gagal, coba yang lain.
-    """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-        "Accept-Encoding": "gzip, deflate, br"
-    }
-
-    # METODE 1: Link 1drv.ms dengan parameter download
-    # Ini metode paling modern.
-    url_1 = f"https://1drv.ms/x/c/{cid}/{token}?download=1"
-    try:
-        # allow_redirects=True sangat PENTING di sini
-        r = requests.get(url_1, headers=headers, timeout=30, allow_redirects=True)
-        if r.status_code == 200 and "text/html" not in r.headers.get("Content-Type", "").lower():
-            return r
-    except: pass
-
-    # METODE 2: Link onedrive.live.com dengan format 'download'
-    # Kita rakit ulang linknya secara manual
-    # resid biasanya formatnya: CID (huruf besar) + "!106"
-    resid = cid.upper() + "!106"
-    url_2 = f"https://onedrive.live.com/download?cid={cid}&resid={resid}&authkey={token}"
-    try:
-        r = requests.get(url_2, headers=headers, timeout=30)
-        if r.status_code == 200 and "text/html" not in r.headers.get("Content-Type", "").lower():
-            return r
-    except: pass
-
-    # METODE 3: Link onedrive.live.com Alternatif (Tanpa CID di depan)
-    url_3 = f"https://onedrive.live.com/download?resid={resid}&authkey={token}"
-    try:
-        r = requests.get(url_3, headers=headers, timeout=30)
-        return r # Return apa adanya (terakhir)
-    except: pass
-    
-    return None
+# Dummy untuk app.py
+URL_HAKABEGOLD = LINK_DATA_LIVE
 
 def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
     try:
-        # --- LANGKAH 1: Download File (Bruteforce) ---
-        response = get_excel_content(CID, TOKEN)
+        # Gunakan Session untuk menangani cookies/redirect Microsoft
+        session = requests.Session()
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+
+        # 1. Download Data
+        # allow_redirects=True PENTING! Karena 1drv.ms akan melempar kita ke server download aslinya.
+        response = session.get(LINK_DATA_LIVE, headers=headers, timeout=60, allow_redirects=True)
         
-        if not response:
-            return pd.DataFrame(), "HK Logam Mulia — Gagal koneksi (Network Error)"
-            
         if response.status_code != 200:
-            return pd.DataFrame(), f"HK Logam Mulia — Gagal Download (Code: {response.status_code})"
+            return pd.DataFrame(), f"HK Logam Mulia — Gagal Akses (Status: {response.status_code})"
 
-        # Cek apakah isinya HTML
-        if "text/html" in response.headers.get("Content-Type", "").lower():
-             return pd.DataFrame(), "HK Logam Mulia — Gagal. Link mengarah ke Web View, bukan File Excel."
+        # 2. Cek apakah kita malah dapat halaman Login/HTML (Tanda Gagal)
+        content_type = response.headers.get("Content-Type", "").lower()
+        if "text/html" in content_type:
+            return pd.DataFrame(), "HK Logam Mulia — Gagal ambil data (Terhalang Halaman Web View)."
 
-        # --- LANGKAH 2: Proses Excel ---
+        # 3. Proses Data (Ubah Raw Data jadi Tabel)
         try:
             xls_data = BytesIO(response.content)
             # Baca semua sheet
             xls = pd.read_excel(xls_data, sheet_name=None, header=None, engine='openpyxl')
         except Exception:
-            return pd.DataFrame(), "HK Logam Mulia — File rusak atau format bukan Excel valid."
+            return pd.DataFrame(), "HK Logam Mulia — Format data rusak/bukan Excel."
 
         final_df = pd.DataFrame()
         label = "HK Logam Mulia"
         buyback_val = 0
 
-        # --- LANGKAH 3: Scanning Data ---
+        # 4. Scanning Sheet (Mencari di mana tabel harga berada)
         for sheet_name, df in xls.items():
-            # Scan 50 baris pertama
+            # Cek 50 baris pertama
             for i, row in df.head(50).iterrows():
                 row_text = " ".join(row.astype(str).lower())
                 
                 # KATA KUNCI: "berat" dan "end user"
                 if "berat" in row_text and "end user" in row_text:
                     
+                    # Set Header Tabel
                     df.columns = df.iloc[i].astype(str).str.lower().str.strip()
                     data = df.iloc[i+1:].copy()
                     
+                    # Identifikasi Kolom
                     c_berat = next((c for c in df.columns if "berat" in c), None)
                     c_jual = next((c for c in df.columns if "end user" in c), None)
                     c_stok = next((c for c in df.columns if "stock" in c or "stok" in c), None)
                     
                     if c_berat and c_jual:
-                        # Cleaning Data
+                        # Bersihkan Angka
                         data["weight_g"] = data[c_berat].apply(lambda x: _clean_number(x, is_float=True))
                         data["sell_idr"] = data[c_jual].apply(lambda x: _clean_number(x, is_float=False))
                         
@@ -108,9 +73,11 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
                         else:
                             data["stock"] = "Ready"
                         
+                        # Ambil data yang valid saja (Harga > 0)
                         valid = data[(data["weight_g"] > 0) & (data["sell_idr"] > 0)].copy()
                         
                         if not valid.empty:
+                            # Cari Info Tanggal & Buyback dari teks sekitar
                             full_text = " ".join(df.astype(str).values.flatten()).lower()
                             
                             dt = re.search(r"(\d{1,2}\s+[a-z]{3,}\s+\d{4})", full_text)
@@ -128,12 +95,12 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
             if not final_df.empty: break
 
         if final_df.empty:
-            return pd.DataFrame(), "HK Logam Mulia — Struktur tabel Excel berubah/tidak ditemukan."
+            return pd.DataFrame(), "HK Logam Mulia — Data tidak ditemukan (Struktur Excel berubah)."
 
         return final_df.sort_values("weight_g").reset_index(drop=True), label
 
     except Exception as e:
-        return pd.DataFrame(), f"HK Logam Mulia — Error System: {str(e)}"
+        return pd.DataFrame(), f"HK Logam Mulia — Error: {str(e)}"
 
 def _clean_number(val, is_float=False):
     if pd.isna(val) or val == "": return 0
