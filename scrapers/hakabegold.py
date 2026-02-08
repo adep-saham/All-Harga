@@ -1,6 +1,8 @@
 import pandas as pd
 import re
+import io
 from typing import Tuple
+from datetime import datetime
 
 # =====================================================
 # SOURCE
@@ -32,53 +34,55 @@ def _clean_rp(x) -> int:
 # =====================================================
 # MAIN PARSER
 # =====================================================
-def parse_hakabegold() -> Tuple[pd.DataFrame, str]:
-    # -------------------------------------------------
-    # 1. Baca CSV TANPA header
-    # -------------------------------------------------
-    raw = pd.read_csv(URL_HAKABEGOLD, header=None)
+def parse_hakabegold(html: str = "") -> Tuple[pd.DataFrame, str]:
+    """
+    Parser untuk HK Logam Mulia (Hakabe Gold).
+    Ditambahkan parameter 'html' agar sesuai dengan panggilan di app.py.
+    """
+    try:
+        # -------------------------------------------------
+        # 1. Baca data
+        # Jika 'html' dikirim dari app.py, gunakan io.StringIO
+        # Jika tidak, fetch langsung menggunakan URL
+        # -------------------------------------------------
+        if html and not html.startswith("ERROR"):
+            raw = pd.read_csv(io.StringIO(html), header=None)
+        else:
+            raw = pd.read_csv(URL_HAKABEGOLD, header=None)
 
-    # -------------------------------------------------
-    # 2. Ambil hanya baris DATA
-    #    (kolom 0 = berat numerik)
-    # -------------------------------------------------
-    data = raw[pd.to_numeric(raw[0], errors="coerce").notna()].copy()
-    if data.empty:
-        raise ValueError("Data berat emas tidak ditemukan.")
+        # -------------------------------------------------
+        # 2. Ambil hanya baris DATA
+        # -------------------------------------------------
+        data = raw[pd.to_numeric(raw[0], errors="coerce").notna()].copy()
+        if data.empty:
+            return pd.DataFrame(), "Gagal: Data berat emas tidak ditemukan."
 
-    # -------------------------------------------------
-    # 3. Mapping dasar (SESUAI EXCEL KIRI)
-    #    Col 0 = Berat
-    #    Col 1 = Harga End User TOTAL (PRESISI)
-    # -------------------------------------------------
-    df = pd.DataFrame({
-        "vendor": "HK Logam Mulia",
-        "weight_g": data[0].astype(float),
-        "sell_idr": data[1].apply(_clean_rp),  # Harga End User TOTAL (presisi)
-        "stock": "Ready"
-    })
+        # -------------------------------------------------
+        # 3. Mapping dasar
+        # -------------------------------------------------
+        df = pd.DataFrame({
+            "vendor": "HK Logam Mulia",
+            "weight_g": data[0].astype(float),
+            "sell_idr": data[1].apply(_clean_rp),
+            "stock": "Ready"
+        })
 
-    # -------------------------------------------------
-    # 4. DEDUP FINAL
-    #    Jika ada 2 harga per berat:
-    #    -> ambil HARGA TERKECIL (harga presisi, bukan pembulatan)
-    # -------------------------------------------------
-    df = (
-        df.sort_values("sell_idr", ascending=True)
-          .drop_duplicates(subset="weight_g", keep="first")
-    )
+        # -------------------------------------------------
+        # 4. Dedup & Sort
+        # -------------------------------------------------
+        df = (
+            df.sort_values("sell_idr", ascending=True)
+              .drop_duplicates(subset="weight_g", keep="first")
+              .sort_values("weight_g")
+        )
 
-    # -------------------------------------------------
-    # 5. Hitung Buyback = berat × buyback/gr
-    # -------------------------------------------------
-    df["buyback_idr"] = df["weight_g"] * BUYBACK_PER_GR
+        # -------------------------------------------------
+        # 5. Hitung Buyback
+        # -------------------------------------------------
+        df["buyback_idr"] = df["weight_g"] * BUYBACK_PER_GR
 
-    # -------------------------------------------------
-    # 6. Final clean & sort
-    # -------------------------------------------------
-    df = df[(df["weight_g"] > 0) & (df["sell_idr"] > 0)]
-    df = df.sort_values("weight_g").reset_index(drop=True)
+        ts = datetime.now().strftime("%d/%m/%y %H:%M:%S")
+        return df, f"Hakabe Gold - {ts}"
 
-    label = "HK Logam Mulia (Harga Presisi, No Duplicate)"
-
-    return df, label
+    except Exception as e:
+        return pd.DataFrame(), f"Error Hakabe: {str(e)}"
