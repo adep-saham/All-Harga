@@ -101,7 +101,7 @@ if st.button("🚀 Ambil Data"):
             # STAR GOLD (⚠️ AMBIL SENDIRI, JANGAN fetch_html)
             # =================================================
             elif source == "StarGold":
-                df, update_label = parse_stargold(None)
+                df, update_label = parse_stargold("")
 
             # =================================================
             # AGUNG JEWELLERY
