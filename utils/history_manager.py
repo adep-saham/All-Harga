@@ -1,27 +1,46 @@
+import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 import pandas as pd
-import os
 from datetime import datetime
 
-HISTORY_FILE = "gold_price_history.csv"
+# Masukkan URL Google Sheet Anda di sini atau di Secrets
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1hI-pNUNqO2aGuLfIyKuT7zFAI43iKqC19RIKQBtlrck/edit?usp=sharing"
 
 def save_to_history(df_new):
+    """Menyimpan data ke Google Sheets (Append)."""
     if df_new.empty:
         return
     
-    # Tambahkan timestamp pengambilan data
-    df_new['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    if os.path.exists(HISTORY_FILE):
-        df_old = pd.read_csv(HISTORY_FILE)
-        df_final = pd.concat([df_old, df_new], ignore_index=True)
-    else:
-        df_final = df_new
+    try:
+        # Inisialisasi koneksi
+        conn = st.connection("gsheets", type=GSheetsConnection)
         
-    # Hapus duplikat data yang sama di waktu yang sama
-    df_final = df_final.drop_duplicates()
-    df_final.to_csv(HISTORY_FILE, index=False)
+        # Ambil data lama
+        df_old = conn.read(spreadsheet=SHEET_URL)
+        
+        # Siapkan data baru dengan timestamp
+        df_new_to_save = df_new.copy()
+        df_new_to_save['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Pastikan urutan kolom sama
+        cols = ['timestamp', 'vendor', 'weight_g', 'sell_idr', 'buyback_idr']
+        df_new_to_save = df_new_to_save[cols]
+        
+        # Gabungkan
+        df_final = pd.concat([df_old, df_new_to_save], ignore_index=True)
+        
+        # Update Google Sheets
+        conn.update(spreadsheet=SHEET_URL, data=df_final)
+        return True
+    except Exception as e:
+        st.error(f"Gagal simpan ke Google Sheets: {e}")
+        return False
 
 def get_full_history():
-    if os.path.exists(HISTORY_FILE):
-        return pd.read_csv(HISTORY_FILE)
-    return pd.DataFrame()
+    """Mengambil seluruh data dari Google Sheets untuk grafik."""
+    try:
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        df = conn.read(spreadsheet=SHEET_URL)
+        return df
+    except Exception:
+        return pd.DataFrame()
