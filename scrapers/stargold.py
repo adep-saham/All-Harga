@@ -5,52 +5,48 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from curl_cffi import requests # Wajib: pip install curl_cffi
 
-# URL Tetap sesuai app.py
 URL_STARGOLD = "https://stargold.id/price/"
 
 def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
     """
-    Fungsi ini tetap menerima parameter 'html' agar app.py tidak perlu diubah.
-    Logika:
-    1. Coba ambil data live dengan curl_cffi (Impersonate Chrome).
-    2. Jika gagal (Connection Reset), otomatis cari file 'htlm.txt' sebagai cadangan.
+    Versi Anti-Blokir HTTP/2: Memaksa protokol HTTP/1.1 untuk menghindari stream cancel.
     """
     final_html = html
     source_info = "Live Web"
 
-    # 1. LOGIKA AMBIL DATA (Jika html dari app.py kosong)
     if not final_html:
         try:
-            # Menggunakan impersonate chrome110 untuk meniru TLS Fingerprint asli
-            # Memaksa HTTP/1.1 untuk menghindari deteksi HTTP/2 bot
+            # Menggunakan curl_cffi untuk meniru Chrome 110
+            # KUNCI: Menambahkan http_version=requests.HttpVersion.v1_1
             response = requests.get(
                 URL_STARGOLD,
                 impersonate="chrome110",
+                http_version=requests.HttpVersion.v1_1, # Memaksa HTTP/1.1
                 timeout=30,
                 headers={
-                    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                    "accept-language": "id-ID,id;q=0.9,en-US;q=0.8",
-                    "referer": "https://www.google.com/",
-                    "upgrade-insecure-requests": "1"
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                    "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8",
+                    "Referer": "https://www.google.com/",
+                    "Cache-Control": "no-cache"
                 }
             )
             response.raise_for_status()
             final_html = response.text
         except Exception as e:
-            # FALLBACK CERDAS: Jika koneksi diputus, cek apakah ada file htlm.txt di folder
+            # Jika tetap gagal, gunakan file htlm.txt yang Anda buat
             if os.path.exists("htlm.txt"):
                 with open("htlm.txt", "r", encoding="utf-8") as f:
                     final_html = f.read()
-                source_info = "Local File (htlm.txt)"
+                source_info = "Manual (htlm.txt)"
             else:
-                return pd.DataFrame(), f"Blokir Server: {str(e)}. (Tips: Simpan source web ke htlm.txt)"
+                return pd.DataFrame(), f"Blokir Protokol: {str(e)}"
 
-    # 2. LOGIKA PARSING (Sesuai struktur htlm.txt Anda)
+    # PROSES PARSING (Sesuai htlm.txt)
     try:
         soup = BeautifulSoup(final_html, "html.parser")
         all_data = []
         
-        # Cari tabel dengan class table-sm sesuai htlm.txt
+        # Cari tabel (class table-sm di htlm.txt)
         tables = soup.find_all("table", class_="table-sm")
         
         for table in tables:
@@ -58,15 +54,17 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
             for row in rows:
                 cols = row.find_all("td")
                 if len(cols) >= 3:
-                    raw_weight = cols[0].get_text(strip=True).lower()
+                    raw_name = cols[0].get_text(strip=True).lower()
                     raw_sell = cols[1].get_text(strip=True)
                     raw_buyback = cols[2].get_text(strip=True)
 
-                    if "gr" in raw_weight:
+                    if "gr" in raw_name:
                         try:
-                            # Bersihkan Berat (0,1 gr -> 0.1)
-                            w_val = raw_weight.replace("gr", "").replace(",", ".").strip()
-                            # Ambil angka harga saja (Rp. 367.400 -> 367400)
+                            # Bersihkan Berat (Indo: 0,1 gr -> 0.1)
+                            w_val = raw_name.replace("gr", "").replace(",", ".").strip()
+                            w_val = w_val.split()[-1] # Ambil angka terakhir jika ada nama merek
+
+                            # Bersihkan Harga
                             s_val = "".join(filter(str.isdigit, raw_sell))
                             b_val = "".join(filter(str.isdigit, raw_buyback))
 
@@ -81,9 +79,8 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
                             continue
 
         if not all_data:
-            return pd.DataFrame(), f"Data tidak ditemukan di {source_info}."
+            return pd.DataFrame(), "Data tidak ditemukan. Pastikan isi htlm.txt lengkap."
 
-        # Sinkronisasi dengan ekspektasi app.py
         df = pd.DataFrame(all_data)
         df = df.drop_duplicates(subset=["weight_g", "sell_idr"]).sort_values("weight_g").reset_index(drop=True)
         
@@ -91,4 +88,4 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
         return df, f"StarGold ({source_info}) - {ts}"
 
     except Exception as e:
-        return pd.DataFrame(), f"Error Parsing: {str(e)}"
+        return pd.DataFrame(), f"Error Parse: {str(e)}"
