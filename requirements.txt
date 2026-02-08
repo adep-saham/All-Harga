@@ -7,3 +7,6 @@ gspread
 google-auth
 cloudscraper
 curl_cffi
+crawl4ai
+torch
+transformers
