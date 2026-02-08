@@ -8,9 +8,11 @@ URL_HAKABEGOLD = (
     "/pub?gid=2039839912&single=true&output=csv"
 )
 
+BUYBACK_PER_GR = 2649920  # FIX: sesuai Excel (Rp2.649.920 / gr)
+
 
 def _clean_rp(x):
-    """ 'Rp2,946,000' -> 2946000 """
+    """ 'Rp1,472,360' -> 1472360 """
     if pd.isna(x):
         return 0
     return int(re.sub(r"[^\d]", "", str(x)) or 0)
@@ -23,42 +25,32 @@ def parse_hakabegold() -> Tuple[pd.DataFrame, str]:
     raw = pd.read_csv(URL_HAKABEGOLD, header=None)
 
     # =====================================================
-    # 2. Ambil hanya baris DATA (kolom 0 = Berat numerik)
+    # 2. Ambil hanya baris DATA
+    #    (kolom 0 = berat numerik)
     # =====================================================
     data = raw[pd.to_numeric(raw[0], errors="coerce").notna()].copy()
+
     if data.empty:
         raise ValueError("Data berat emas tidak ditemukan.")
 
     # =====================================================
-    # 3. Ambil BUYBACK / GRAM dari baris bawah sheet
-    # =====================================================
-    buyback_row = raw[
-        raw[0].astype(str).str.contains("buyback", case=False, na=False)
-    ]
-    if buyback_row.empty:
-        raise ValueError("Baris Buyback tidak ditemukan di sheet.")
-
-    buyback_per_gr = _clean_rp(buyback_row.iloc[0, 3])
-
-    # =====================================================
-    # 4. Mapping SESUAI EXCEL KIRI (CHECKLIST)
-    #    Col 0 = Berat
-    #    Col 2 = Harga End User / gr
+    # 3. Mapping FINAL (SESUAI EXCEL KIRI)
     # =====================================================
     df = pd.DataFrame({
         "vendor": "HK Logam Mulia",
         "weight_g": data[0].astype(float),
-        "sell_idr": data[2].apply(_clean_rp),   # Harga End User / gr
-        "buyback_idr": data[0].astype(float) * buyback_per_gr,
+        # ⬇️ INI KUNCI UTAMA
+        "sell_idr": data[1].apply(_clean_rp),  # Harga End User TOTAL
+        "buyback_idr": data[0].astype(float) * BUYBACK_PER_GR,
         "stock": "Ready"
     })
 
     # =====================================================
-    # 5. Final clean & sort
+    # 4. Final cleaning
     # =====================================================
     df = df[(df["weight_g"] > 0) & (df["sell_idr"] > 0)]
     df = df.sort_values("weight_g").reset_index(drop=True)
 
-    label = "HK Logam Mulia (Harga End User/gr, Buyback x Berat)"
+    label = "HK Logam Mulia (Harga End User TOTAL, Buyback x Berat)"
 
     return df, label
