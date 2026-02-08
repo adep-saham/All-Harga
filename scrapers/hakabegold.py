@@ -1,53 +1,73 @@
 import pandas as pd
 import requests
+import base64
 import re
 from io import BytesIO
 from typing import Tuple
 
 # =========================================================
-# CONFIG: URL DARI TOMBOL DOWNLOAD (REPLIKASI)
+# PASTE LINK "SHARE" DARI ONEDRIVE ANDA DI SINI
 # =========================================================
-# Kita ambil Link Panjang Anda, lalu ganti '/edit' jadi '/download'.
-# Parameter 'redeem' adalah kuncinya, jangan dihapus.
-LONG_URL = "https://onedrive.live.com/edit?cid=f82ea6cd27a31b67&id=F82EA6CD27A31B67!106&resid=F82EA6CD27A31B67!106&ithint=file%2Cxlsx&embed=1&em=2&wdAllowInteractivity=False&ActiveCell=%27Sheet2%27!A1&Item=%27Sheet2%27!A1%3AF18&wdHideGridlines=True&wdDownloadButton=True&wdInConfigurator=True%2CTrue&migratedtospo=true&redeem=aHR0cHM6Ly8xZHJ2Lm1zL3gvYy9mODJlYTZjZDI3YTMxYjY3L1VRUm5HNk1uemFZdUlJRDRhZ0FBQUFBQUFKbXltZEpuU3l3S211dz9lbT0yJndkQWxsb3dJbnRlcmFjdGl2aXR5PUZhbHNlJkFjdGl2ZUNlbGw9J1NoZWV0MichQTEmSXRlbT0nU2hlZXQyJyFBMTpGMTgmd2RIaWRlR3JpZGxpbmVzPVRydWUmd2REb3dubG9hZEJ1dHRvbj1UcnVlJndkSW5Db25maWd1cmF0b3I9VHJ1ZSZ3ZEluQ29uZmlndXJhdG9yPVRydWU&wdo=2"
+# Contoh: "https://1drv.ms/x/s!AmX_..." atau link panjang onedrive.live.com
+# Pastikan settingannya "Anyone with the link" (Siapa saja)
+MY_ONEDRIVE_LINK = "https://1drv.ms/x/c/7181a7df3eab3581/IQAdDl52fuvfQqpHMQUXarpPAQjSrmRAdGBYh6zQE5QIlF8?e=GMfdQD"
 
-# Trik: Ubah mode EDIT jadi DOWNLOAD
-URL_HAKABEGOLD = LONG_URL.replace("/edit", "/download")
+# Dummy variable
+URL_HAKABEGOLD = MY_ONEDRIVE_LINK
+
+def create_direct_link(share_url):
+    """
+    Mengubah Link Share OneDrive (Web View) menjadi Link Download API (Direct).
+    Teknik: Menggunakan OneDrive API v1.0 dengan encoding Base64.
+    """
+    try:
+        # 1. Bersihkan URL
+        if not share_url or "http" not in share_url: return None
+        
+        # 2. Base64 Encoding sesuai standar Microsoft API
+        #    - Encode URL ke Base64
+        #    - Ganti karakter '+' jadi '-' dan '/' jadi '_'
+        #    - Hapus padding '=' di akhir
+        #    - Tambahkan prefix 'u!' di depan
+        base64_value = base64.b64encode(share_url.encode("utf-8")).decode("utf-8")
+        encoded_url = "u!" + base64_value.rstrip("=").replace("/", "_").replace("+", "-")
+        
+        # 3. Buat URL API Download
+        api_url = f"https://api.onedrive.com/v1.0/shares/{encoded_url}/root/content"
+        return api_url
+    except Exception as e:
+        print(f"Error converting link: {e}")
+        return share_url
 
 def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
     try:
-        # Gunakan Session agar koneksi lebih stabil layaknya browser
-        session = requests.Session()
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-
-        # 1. Download File
-        # Kita hit URL yang sudah dimodifikasi jadi /download
-        response = session.get(URL_HAKABEGOLD, headers=headers, timeout=60, allow_redirects=True)
+        # --- LANGKAH 1: Convert Link Share jadi Link Download ---
+        download_url = create_direct_link(MY_ONEDRIVE_LINK)
         
+        if not download_url:
+            return pd.DataFrame(), "Link OneDrive belum diisi di script."
+
+        # --- LANGKAH 2: Download File ---
+        headers = {"User-Agent": "Mozilla/5.0"}
+        # Timeout agak lama karena API butuh waktu resolve
+        response = requests.get(download_url, headers=headers, timeout=60)
+
         if response.status_code != 200:
-            return pd.DataFrame(), f"HK Logam Mulia — Gagal Akses (Code: {response.status_code})"
+            return pd.DataFrame(), f"Gagal Akses OneDrive (Code: {response.status_code}). Pastikan Link diset ke 'Anyone'."
 
-        # Cek apakah malah dapat halaman Login/HTML
-        if "text/html" in response.headers.get("Content-Type", "").lower():
-            # Fallback: Kadang butuh 'authkey' eksplisit jika 'redeem' gagal direct
-            # Kita coba ekstrak token dari link asli jika cara pertama gagal
-            return pd.DataFrame(), "HK Logam Mulia — Link Download kedaluwarsa atau butuh login ulang."
-
-        # 2. Proses Excel
+        # --- LANGKAH 3: Proses Excel ---
         try:
             xls_data = BytesIO(response.content)
-            # Baca semua sheet (Data Anda ada di Sheet2 menurut linknya, tapi kita scan semua biar aman)
+            # Baca semua sheet
             xls = pd.read_excel(xls_data, sheet_name=None, header=None, engine='openpyxl')
         except Exception:
-            return pd.DataFrame(), "HK Logam Mulia — File rusak atau format bukan Excel."
+            return pd.DataFrame(), "Link benar, tapi format file rusak/bukan Excel."
 
         final_df = pd.DataFrame()
         label = "HK Logam Mulia"
         buyback_val = 0
 
-        # 3. Scanning Data
+        # --- LANGKAH 4: Scanning Data ---
         for sheet_name, df in xls.items():
             # Scan 50 baris pertama
             for i, row in df.head(50).iterrows():
@@ -78,6 +98,7 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
                         if not valid.empty:
                             full_text = " ".join(df.astype(str).values.flatten()).lower()
                             
+                            # Cari Tanggal & Buyback
                             dt = re.search(r"(\d{1,2}\s+[a-z]{3,}\s+\d{4})", full_text)
                             if dt: label += f" — {dt.group(1).title()}"
                             
@@ -93,12 +114,12 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
             if not final_df.empty: break
 
         if final_df.empty:
-            return pd.DataFrame(), "HK Logam Mulia — Data tidak ditemukan (Struktur berubah)."
+            return pd.DataFrame(), "Tabel harga tidak ditemukan di file Excel Anda."
 
         return final_df.sort_values("weight_g").reset_index(drop=True), label
 
     except Exception as e:
-        return pd.DataFrame(), f"HK Logam Mulia — Error: {str(e)}"
+        return pd.DataFrame(), f"Error System: {str(e)}"
 
 def _clean_number(val, is_float=False):
     if pd.isna(val) or val == "": return 0
