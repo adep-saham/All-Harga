@@ -1,109 +1,117 @@
 import pandas as pd
 import requests
-import base64
 import re
 from io import BytesIO
 from typing import Tuple
 
-# =========================================================
-# LINK ONEDRIVE ANDA (SUDAH TERTANAM)
-# =========================================================
-MY_ONEDRIVE_LINK = "https://1drv.ms/x/c/7181a7df3eab3581/IQAdDl52fuvfQqpHMQUXarpPAQjSrmRAdGBYh6zQE5QIlF8"
+# Link OneDrive 1drv.ms milik Anda
+MY_SHORT_LINK = "https://1drv.ms/x/c/7181a7df3eab3581/IQAdDl52fuvfQqpHMQUXarpPAQjSrmRAdGBYh6zQE5QIlF8"
 
-# Dummy variable agar app.py tidak error
-URL_HAKABEGOLD = MY_ONEDRIVE_LINK
+# Dummy variable agar app.py aman
+URL_HAKABEGOLD = MY_SHORT_LINK
 
-def create_direct_link(share_url):
+def resolve_onedrive_link(short_url):
     """
-    Mengubah Link Share (1drv.ms) menjadi Link API Download Resmi.
-    Metode: OneDrive API v1.0 Encoded Shares.
+    Fungsi Penjelajah:
+    1. Mengakses link pendek (1drv.ms).
+    2. Mengikuti pengalihan (redirect) sampai ke alamat asli (onedrive.live.com).
+    3. Mengubah alamat 'View/Edit' menjadi 'Download'.
     """
     try:
-        # 1. Encode URL ke Base64
-        base64_value = base64.b64encode(share_url.encode("utf-8")).decode("utf-8")
+        session = requests.Session()
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
         
-        # 2. Format sesuai standar API OneDrive (URL-Safe Base64)
-        #    - Tambah 'u!' di depan
-        #    - Hapus padding '=' di belakang
-        #    - Ganti '/' jadi '_' dan '+' jadi '-'
-        encoded_url = "u!" + base64_value.rstrip("=").replace("/", "_").replace("+", "-")
+        # 1. Ikuti Redirect sampai mentok
+        # allow_redirects=True artinya "Jangan berhenti di pintu depan, masuk terus sampai tujuan akhir"
+        response = session.get(short_url, headers=headers, timeout=30, allow_redirects=True)
         
-        # 3. Return URL API
-        return f"https://api.onedrive.com/v1.0/shares/{encoded_url}/root/content"
+        final_url = response.url
+        
+        # 2. Modifikasi URL Akhir
+        # URL akhir biasanya berbentuk: https://onedrive.live.com/edit.aspx?... atau view.aspx?...
+        # Kita ganti bagian itu menjadi 'download'
+        
+        if "onedrive.live.com" in final_url:
+            # Ganti variasi apapun (edit, view, redir) menjadi 'download'
+            download_url = re.sub(r"/(edit|view|redir|embed)\.aspx", "/download", final_url)
+            
+            # Bersihkan parameter sampah yang mungkin menghalangi download
+            download_url = download_url.replace("&action=edit", "").replace("&app=Excel", "")
+            
+            return download_url
+            
+        # Jika redirect gagal tapi masih 1drv.ms, coba cara kasar tambah parameter download
+        return short_url + "?download=1"
 
     except Exception as e:
-        return None
+        print(f"Gagal resolve link: {e}")
+        return short_url
 
 def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
     try:
-        # LANGKAH 1: Dapatkan Link Download API
-        download_url = create_direct_link(MY_ONEDRIVE_LINK)
+        # LANGKAH 1: Resolve Link
+        download_url = resolve_onedrive_link(MY_SHORT_LINK)
         
-        if not download_url:
-            return pd.DataFrame(), "Gagal memproses Link OneDrive."
-
-        # LANGKAH 2: Download File
+        # LANGKAH 2: Download
         headers = {"User-Agent": "Mozilla/5.0"}
-        
-        # Timeout 60 detik (API butuh waktu resolve)
+        # Timeout agak lama (60s) jaga-jaga server lambat
         response = requests.get(download_url, headers=headers, timeout=60)
         
         if response.status_code != 200:
-            return pd.DataFrame(), f"Gagal Akses (Code: {response.status_code}). Pastikan izin file 'Anyone'."
+            return pd.DataFrame(), f"Gagal Akses (Code: {response.status_code})"
 
         # LANGKAH 3: Baca Excel
+        # Kita pakai engine openpyxl yang sudah terinstall
         try:
             xls_data = BytesIO(response.content)
-            # Baca semua sheet tanpa header
             xls = pd.read_excel(xls_data, sheet_name=None, header=None, engine='openpyxl')
         except Exception:
-            return pd.DataFrame(), "Format file rusak atau bukan Excel (.xlsx)."
+            # Jika gagal, cek apakah itu HTML (berarti link masih salah)
+            if b"<!DOCTYPE html>" in response.content[:100]:
+                return pd.DataFrame(), "Link mengarah ke Web View. Gagal convert ke Download."
+            return pd.DataFrame(), "File rusak atau bukan Excel."
 
         final_df = pd.DataFrame()
         label = "HK Logam Mulia"
         buyback_val = 0
 
-        # LANGKAH 4: Scanning Data (Mencari Tabel Harga)
+        # LANGKAH 4: Cari Tabel Data
         for sheet_name, df in xls.items():
-            # Scan 50 baris pertama tiap sheet
+            # Scan 50 baris pertama
             for i, row in df.head(50).iterrows():
                 row_text = " ".join(row.astype(str).lower())
                 
-                # Ciri-ciri tabel: ada kata "berat" dan "end user"
+                # KATA KUNCI: "berat" dan "end user" (Header tabel)
                 if "berat" in row_text and "end user" in row_text:
                     
-                    # Set Header
                     df.columns = df.iloc[i].astype(str).str.lower().str.strip()
                     data = df.iloc[i+1:].copy()
                     
-                    # Cari Kolom Target
                     c_berat = next((c for c in df.columns if "berat" in c), None)
                     c_jual = next((c for c in df.columns if "end user" in c), None)
                     c_stok = next((c for c in df.columns if "stock" in c or "stok" in c), None)
                     
                     if c_berat and c_jual:
-                        # Bersihkan Angka
+                        # Bersihkan Data
                         data["weight_g"] = data[c_berat].apply(lambda x: _clean_number(x, is_float=True))
                         data["sell_idr"] = data[c_jual].apply(lambda x: _clean_number(x, is_float=False))
                         
-                        # Stok
                         if c_stok:
                             data["stock"] = data[c_stok].fillna("Ready")
                         else:
                             data["stock"] = "Ready"
                         
-                        # Filter (Hanya harga > 0)
                         valid = data[(data["weight_g"] > 0) & (data["sell_idr"] > 0)].copy()
                         
                         if not valid.empty:
-                            # Cari Info Tambahan (Tanggal & Buyback)
+                            # Cari Metadata (Tanggal & Buyback)
                             full_text = " ".join(df.astype(str).values.flatten()).lower()
                             
-                            # Cari Tanggal (Format: 07 Feb 2024)
                             dt = re.search(r"(\d{1,2}\s+[a-z]{3,}\s+\d{4})", full_text)
                             if dt: label += f" — {dt.group(1).title()}"
                             
-                            # Cari Buyback
                             bb = re.search(r"buyback.*?(\d[\d\.,]+)", full_text)
                             if bb:
                                 buyback_val = _clean_number(bb.group(1))
