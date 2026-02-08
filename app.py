@@ -15,15 +15,15 @@ from scrapers.indogold import parse_indogold, URL_INDOGOLD
 from scrapers.hakabegold import parse_hakabegold, URL_HAKABEGOLD
 from scrapers.agungjewellery import parse_agungjewellery
 
-# Mengimpor fungsi manajemen histori dari folder utils
+# Mengimpor fungsi manajemen histori dan uploader dari folder utils
 try:
     from utils.uploader import render_uploader_sidebar
     from utils.history_manager import get_full_history, save_to_history
 except ImportError:
-    # Fallback jika file utils belum tersedia
+    # Fallback agar aplikasi tidak crash jika file belum siap
     def render_uploader_sidebar(): pass
     def get_full_history(): return pd.DataFrame()
-    def save_to_history(df): pass
+    def save_to_history(df): st.error("Fungsi histori tidak ditemukan di utils/")
 
 # =========================================================
 # PAGE CONFIG
@@ -55,9 +55,9 @@ def fetch_html(url: str) -> str:
         return ""
 
 def get_all_comparison_100g():
-    """Mengumpulkan data 100g dari semua sumber dengan filter brand yang tepat."""
+    """Mengumpulkan data 100g dari semua sumber dengan filter yang tepat."""
     results = []
-    # Urutan vendor sesuai permintaan gambar
+    # Daftar urutan vendor sesuai permintaan
     scrapers = [
         ("Stargold", lambda: parse_stargold("")),
         ("Galeri 24", lambda: parse_galeri24(fetch_html(URL_GALERI24))),
@@ -72,19 +72,19 @@ def get_all_comparison_100g():
         try:
             df_tmp, _ = func()
             if df_tmp is not None and not df_tmp.empty:
-                # Filter Antam hanya untuk toko yang multi-brand
+                # Filter 'Antam' untuk multi-brand, atau produk 100g utama untuk brand tunggal
                 if source_name in ["Galeri 24", "Stargold", "Indogold"]:
                     mask = (df_tmp['vendor'].str.contains('ANTAM', case=False, na=False)) & \
                            (df_tmp['weight_g'] == 100)
                 else:
-                    # Untuk toko brand tunggal, langsung ambil 100g
                     mask = (df_tmp['weight_g'] == 100)
                 
                 filtered = df_tmp[mask].copy()
                 if not filtered.empty:
+                    # Ambil baris termurah jika ada pilihan
                     row = filtered.sort_values("sell_idr").iloc[0]
                     results.append({
-                        "vendor": source_name, # Nama bersih untuk tabel
+                        "vendor": source_name,
                         "weight_g": 100,
                         "sell_idr": row['sell_idr'],
                         "buyback_idr": row['buyback_idr']
@@ -105,7 +105,6 @@ mode = st.sidebar.radio(
     index=0
 )
 
-# Pilihan toko hanya muncul jika mode Detail dipilih
 if mode == "🏪 Detail Per Toko":
     source = st.sidebar.selectbox(
         "Pilih Toko",
@@ -117,7 +116,7 @@ else:
 btn_fetch = st.sidebar.button("🚀 Tarik Data Sekarang", use_container_width=True, type="primary")
 
 st.sidebar.divider()
-render_uploader_sidebar() # Jalankan fitur upload manual
+render_uploader_sidebar() # Fitur upload manual StarGold
 
 # =========================================================
 # MAIN CONTENT
@@ -127,7 +126,7 @@ st.title("📊 Monitoring Harga Emas")
 tab1, tab2 = st.tabs(["🕒 Harga Realtime", "📈 Grafik Histori"])
 
 with tab1:
-    # 1. LOGIKA TARIK DATA (Disimpan ke Session State agar bisa disimpan ke Histori)
+    # 1. LOGIKA AMBIL DATA
     if btn_fetch:
         st.cache_data.clear()
         if mode == "📊 Perbandingan 100g (All)":
@@ -141,31 +140,32 @@ with tab1:
                 elif source == "Agung Jewellery": df_detail, _ = parse_agungjewellery()
                 elif source == "HRTA": df_detail, _ = parse_hrta("")
                 else:
-                    url = {"Galeri24": URL_GALERI24, "AnekaLogam": URL_ANEKALOGAM, "IndoGold": URL_INDOGOLD}.get(source)
-                    html = fetch_html(url)
+                    target = {"Galeri24": URL_GALERI24, "AnekaLogam": URL_ANEKALOGAM, "IndoGold": URL_INDOGOLD}.get(source)
+                    html = fetch_html(target)
                     if source == "Galeri24": df_detail, _ = parse_galeri24(html)
                     elif source == "AnekaLogam": df_detail, _ = parse_anekalogam(html)
                     elif source == "IndoGold": df_detail, _ = parse_indogold(html)
                 st.session_state['current_df'] = df_detail
 
-    # 2. TAMPILAN DATA & TOMBOL SIMPAN HISTORI
+    # 2. TAMPILAN DATA & TOMBOL SIMPAN
     if 'current_df' in st.session_state and not st.session_state['current_df'].empty:
         df_active = st.session_state['current_df']
         
-        # Tombol simpan muncul di bawah penarikan data
-        if st.button("💾 Simpan Data ke Histori CSV", use_container_width=True):
-            save_to_history(df_active)
-            st.success("✅ Berhasil menyimpan data ke dalam histori!")
+        # Tombol Simpan ke Google Sheets
+        if st.button("💾 Simpan Data ke Google Sheets", use_container_width=True):
+            success = save_to_history(df_active)
+            if success:
+                st.success("✅ Berhasil! Data telah tersimpan di Google Sheets.")
 
         st.divider()
 
         if mode == "📊 Perbandingan 100g (All)":
             st.subheader("📋 Tabel Perbandingan Emas 100 gr")
             
-            # Pengolahan tabel agar rapi dan urut harga termurah
+            # Urutkan berdasarkan harga jual termurah
             df_table = df_active.sort_values("sell_idr").reset_index(drop=True)
             
-            # Membuat DataFrame tampilan persis seperti gambar
+            # DataFrame tampilan bersih
             display_data = pd.DataFrame({
                 "No": range(1, len(df_table) + 1),
                 "Nama Toko Emas": df_table["vendor"],
@@ -173,11 +173,11 @@ with tab1:
                 "Harga Beli": df_table["buyback_idr"].apply(format_rp)
             })
             
-            # Menggunakan hide_index agar tidak ada kolom index bawaan streamlit yang double
+            # Tampilkan tanpa index ganda
             st.dataframe(display_data, use_container_width=True, hide_index=True)
             
         else:
-            # Tampilan Detail Per Toko (Mode Lama)
+            # Tampilan Detail (Lama)
             for v_name in df_active["vendor"].unique():
                 st.subheader(f"🏢 {v_name}")
                 sub_data = df_active[df_active["vendor"] == v_name].sort_values("weight_g")
@@ -190,16 +190,17 @@ with tab1:
                 st.table(table_detail)
 
     elif btn_fetch:
-        st.warning("Data tidak tersedia. Coba cek koneksi atau upload file source.")
+        st.warning("Data tidak ditemukan. Pastikan koneksi atau file source sudah benar.")
 
 with tab2:
-    st.subheader("📈 Grafik Pergerakan Harga")
-    df_hist = get_full_history()
+    st.subheader("📈 Analisis Pergerakan Harga")
+    df_hist = get_full_history() # Ambil data langsung dari Google Sheets
+    
     if not df_hist.empty:
-        c1, c2 = st.columns(2)
-        with c1:
+        col1, col2 = st.columns(2)
+        with col1:
             v_plot = st.selectbox("Pilih Toko", df_hist['vendor'].unique(), key="v")
-        with c2:
+        with col2:
             w_plot = st.selectbox("Pilih Berat", sorted(df_hist['weight_g'].unique()), key="w")
             
         plot_df = df_hist[(df_hist['vendor'] == v_plot) & (df_hist['weight_g'] == w_plot)]
@@ -208,7 +209,7 @@ with tab2:
                           title=f"Tren Harga {v_plot} {w_plot}g")
             st.plotly_chart(fig, use_container_width=True)
         
-        with st.expander("📂 Database Histori (CSV)"):
+        with st.expander("📂 Database Google Sheets (Live)"):
             st.dataframe(df_hist.sort_values("timestamp", ascending=False), use_container_width=True)
     else:
-        st.info("Belum ada histori. Klik 'Simpan Data' pada Tab Harga Realtime.")
+        st.info("Belum ada histori di Google Sheets. Mulailah menyimpan data di Tab Realtime.")
