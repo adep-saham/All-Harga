@@ -22,6 +22,7 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
         }
         
         # Timeout 60 detik karena redirect 1drv.ms kadang butuh waktu
+        # allow_redirects=True PENTING agar link pendek diarahkan ke file asli
         response = requests.get(URL_HAKABEGOLD, headers=headers, timeout=60, allow_redirects=True)
         
         # Cek Status Code
@@ -37,7 +38,7 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
         # 2. Baca Excel
         try:
             xls_data = BytesIO(response.content)
-            # Baca semua sheet karena data bisa pindah-pindah sheet
+            # Baca semua sheet karena data bisa pindah-pindah sheet (Link Anda menyebut Sheet2)
             xls = pd.read_excel(xls_data, sheet_name=None, header=None, engine='openpyxl')
         except Exception:
             return pd.DataFrame(), "HK Logam Mulia — File rusak atau format bukan Excel"
