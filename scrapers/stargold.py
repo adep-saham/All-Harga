@@ -4,47 +4,59 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-# URL Website Utama untuk scraping
 URL_STARGOLD = "https://stargold.id/price/"
 
 def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
     """
-    Scraper langsung dari website stargold.id/price/
+    Scraper dengan header yang lebih kuat untuk menghindari blokir server.
     """
     try:
-        # Jika dipanggil dari app.py dengan string kosong, kita ambil HTML-nya sendiri
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        response = requests.get(URL_STARGOLD, headers=headers, timeout=20)
-        response.raise_for_status()
-        html_content = response.text
-
-        soup = BeautifulSoup(html_content, "html.parser")
+        # Gunakan Session untuk menjaga konteks koneksi
+        session = requests.Session()
         
-        # Mencari tabel di halaman tersebut
+        # Header lebih lengkap meniru Chrome di Windows
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Cache-Control": "max-age=0",
+        }
+
+        # Melakukan request langsung ke URL
+        response = session.get(URL_STARGOLD, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, "html.parser")
+        
+        # Mencari semua tabel di halaman
         tables = soup.find_all("table")
         if not tables:
-            return pd.DataFrame(), "Gagal menemukan tabel harga di website."
+            return pd.DataFrame(), "Gagal menemukan tabel harga di halaman."
 
         all_data = []
         
-        # Iterasi melalui tabel (Stargold biasanya punya tabel per kategori)
         for table in tables:
             rows = table.find_all("tr")
-            for row in rows[1:]:  # Lewati header
+            for row in rows[1:]:  # Lewati header tabel
                 cols = row.find_all("td")
                 if len(cols) >= 3:
-                    # Ambil teks dan bersihkan
-                    raw_weight = cols[0].get_text(strip=True).lower().replace("gr", "").replace(",", ".")
-                    raw_sell = cols[1].get_text(strip=True).replace("Rp", "").replace(".", "").replace(",", "")
-                    raw_buyback = cols[2].get_text(strip=True).replace("Rp", "").replace(".", "").replace(",", "")
+                    # Ambil teks dan bersihkan karakter non-numerik
+                    text_weight = cols[0].get_text(strip=True).lower().replace("gr", "").replace(",", ".")
+                    text_sell = cols[1].get_text(strip=True).replace("Rp", "").replace(".", "").replace(",", "")
+                    text_buyback = cols[2].get_text(strip=True).replace("Rp", "").replace(".", "").replace(",", "")
                     
                     try:
-                        # Konversi ke tipe data yang sesuai untuk app.py
-                        weight = float(raw_weight)
-                        sell = int(raw_sell) if raw_sell.isdigit() else 0
-                        buyback = int(raw_buyback) if raw_buyback.isdigit() else 0
+                        # Parsing ke tipe data numerik
+                        weight = float(text_weight)
+                        sell = int(text_sell) if text_sell.isdigit() else 0
+                        buyback = int(text_buyback) if text_buyback.isdigit() else 0
                         
                         if weight > 0:
                             all_data.append({
@@ -53,15 +65,15 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
                                 "sell_idr": sell,
                                 "buyback_idr": buyback
                             })
-                    except ValueError:
+                    except (ValueError, IndexError):
                         continue
 
         if not all_data:
-            return pd.DataFrame(), "Data tidak ditemukan atau struktur tabel berubah."
+            return pd.DataFrame(), "Data ditemukan tapi gagal diproses (struktur mungkin berubah)."
 
         df = pd.DataFrame(all_data)
         
-        # Bersihkan duplikat dan urutkan berdasarkan berat
+        # Hilangkan duplikat jika ada tabel yang overlap
         df = df.drop_duplicates(subset=["weight_g"], keep="first")
         df = df.sort_values("weight_g").reset_index(drop=True)
         
@@ -70,5 +82,7 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
         
         return df, update_label
 
+    except requests.exceptions.RequestException as e:
+        return pd.DataFrame(), f"Koneksi Ditolak: {str(e)}"
     except Exception as e:
-        return pd.DataFrame(), f"Error Scraping StarGold: {str(e)}"
+        return pd.DataFrame(), f"Error Fatal: {str(e)}"
