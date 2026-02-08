@@ -1,4 +1,5 @@
 import pandas as pd
+import re
 from typing import Tuple
 
 URL_HAKABEGOLD = (
@@ -10,36 +11,53 @@ URL_HAKABEGOLD = (
 BUYBACK_PER_GR = 2704000
 
 
+def _clean_rp(x):
+    """
+    Bersihkan string Rupiah -> int
+    contoh: "Rp2,946,000" -> 2946000
+    """
+    if pd.isna(x):
+        return 0
+    s = str(x)
+    s = re.sub(r"[^\d]", "", s)
+    return int(s) if s else 0
+
+
 def parse_hakabegold() -> Tuple[pd.DataFrame, str]:
+    # =====================================================
     # 1. Baca CSV TANPA HEADER
-    df = pd.read_csv(URL_HAKABEGOLD, header=None)
+    # =====================================================
+    raw = pd.read_csv(URL_HAKABEGOLD, header=None)
 
-    # 2. Buang baris non-numerik di kolom pertama
-    #    (judul besar / tanggal)
-    df = df[pd.to_numeric(df[0], errors="coerce").notna()]
+    # =====================================================
+    # 2. Ambil DATA SAJA
+    #    Dari struktur sheet kamu:
+    #    Row Excel ke-4 s.d ke-20 ≈ index 3 s.d 19
+    # =====================================================
+    data = raw.iloc[3:20].copy()
 
-    if df.empty:
-        raise ValueError("Tidak ada data numerik ditemukan di CSV.")
-
+    # =====================================================
     # 3. Mapping kolom BERDASARKAN POSISI
-    # Asumsi struktur:
-    # col 0 = End User/gr
-    # col 1 = Harga+PPH 22
-    # col 2 = Harga+PPH 22/gr
-    # col 3 = Stok
-
-    df = df.reset_index(drop=True)
-
-    df_final = pd.DataFrame({
+    #    Col 0 : Berat (gr)
+    #    Col 1 : Harga End User
+    #    Col 2 : Harga + PPH 22
+    #    Col 3 : Harga + PPH 22 / gr
+    #    Col 4 : Stok
+    # =====================================================
+    df = pd.DataFrame({
         "vendor": "HK Logam Mulia",
-        "weight_g": df[0].astype(float),
-        "sell_idr": df[2].astype(float),
-        "buyback_idr": (df[0].astype(float) * BUYBACK_PER_GR).astype(int),
-        "stock": df[3].astype(str)
+        "weight_g": data[0].astype(float),
+        "sell_idr": data[3].apply(_clean_rp),
+        "buyback_idr": data[0].astype(float).astype(int) * BUYBACK_PER_GR,
+        "stock": data[4].astype(str)
     })
 
-    df_final = df_final.sort_values("weight_g").reset_index(drop=True)
+    # =====================================================
+    # 4. Cleaning akhir
+    # =====================================================
+    df = df[(df["weight_g"] > 0) & (df["sell_idr"] > 0)]
+    df = df.sort_values("weight_g").reset_index(drop=True)
 
     label = "HK Logam Mulia (Google Sheets)"
 
-    return df_final, label
+    return df, label
