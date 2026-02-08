@@ -11,3 +11,4 @@ crawl4ai
 torch
 transformers
 plotly
+st-gsheets-connection
