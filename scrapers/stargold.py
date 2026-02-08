@@ -1,11 +1,18 @@
 import requests
 import pandas as pd
+from bs4 import BeautifulSoup
 import re
-import json
 from typing import Tuple
 
 
-URL_STARGOLD = "https://stargold.id/price/"
+URL = "https://stargold.id/price/"
+
+
+def _to_int(text: str) -> int:
+    if not text:
+        return 0
+    text = text.replace("Rp", "").replace(".", "").replace(",", "").strip()
+    return int(text) if text.isdigit() else 0
 
 
 def parse_stargold(_: str = "") -> Tuple[pd.DataFrame, str]:
@@ -14,79 +21,61 @@ def parse_stargold(_: str = "") -> Tuple[pd.DataFrame, str]:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+        )
     }
 
-    r = requests.get(URL_STARGOLD, headers=headers, timeout=30)
+    r = requests.get(URL, headers=headers, timeout=30)
     r.raise_for_status()
-    html = r.text
+
+    soup = BeautifulSoup(r.text, "html.parser")
 
     # =====================================================
-    # 1. Cari JSON di window.__NUXT__
+    # 1. Cari section STARGOLD
     # =====================================================
-    m = re.search(r"window\.__NUXT__\s*=\s*(\{.*?\});", html, re.DOTALL)
-    if not m:
-        raise ValueError("StarGold: tidak menemukan data JSON (__NUXT__).")
+    title = soup.find("h2", string=re.compile(r"STARGOLD", re.I))
+    if not title:
+        raise ValueError("StarGold: judul STARGOLD tidak ditemukan.")
 
-    raw_json = m.group(1)
+    table = title.find_parent("div", class_="compare-page-wrapper") \
+                 .find("table")
 
-    try:
-        data = json.loads(raw_json)
-    except Exception as e:
-        raise ValueError(f"StarGold: gagal parse JSON (__NUXT__): {e}")
-
-    # =====================================================
-    # 2. Navigasi struktur (robust)
-    # =====================================================
-    prices = None
-
-    def find_prices(obj):
-        nonlocal prices
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                if k in ("prices", "priceList", "products"):
-                    prices = v
-                    return
-                find_prices(v)
-        elif isinstance(obj, list):
-            for i in obj:
-                find_prices(i)
-
-    find_prices(data)
-
-    if not prices or not isinstance(prices, list):
-        raise ValueError("StarGold: tidak menemukan blok harga (prices).")
+    if not table:
+        raise ValueError("StarGold: tabel harga tidak ditemukan.")
 
     # =====================================================
-    # 3. Mapping ke schema app
+    # 2. Parse baris
     # =====================================================
+    rows = table.find_all("tr")[1:]  # skip header
+
     records = []
 
-    for item in prices:
-        try:
-            weight = float(item.get("weight", 0))
-            sell = int(item.get("sell_price", 0))
-            buy = int(item.get("buyback_price", 0))
-        except Exception:
+    for tr in rows:
+        tds = tr.find_all("td")
+        if len(tds) != 3:
             continue
 
-        if weight > 0 and sell > 0:
-            records.append({
-                "vendor": "StarGold",
-                "weight_g": weight,
-                "sell_idr": sell,
-                "buyback_idr": buy,
-                "stock": "Ready"
-            })
+        berat = tds[0].get_text(strip=True)
+        jual = tds[1].get_text(strip=True)
+        buyback = tds[2].get_text(strip=True)
+
+        try:
+            weight = float(berat)
+        except:
+            continue
+
+        records.append({
+            "vendor": "StarGold",
+            "weight_g": weight,
+            "sell_idr": _to_int(jual),
+            "buyback_idr": _to_int(buyback),
+            "stock": "Ready"
+        })
 
     if not records:
-        raise ValueError("StarGold: data harga kosong setelah parsing JSON.")
+        raise ValueError("StarGold: data kosong setelah parsing.")
 
     df = (
         pd.DataFrame(records)
-        .drop_duplicates(subset="weight_g")
         .sort_values("weight_g")
         .reset_index(drop=True)
     )
