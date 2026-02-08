@@ -8,49 +8,42 @@ URL_HAKABEGOLD = (
     "/pub?gid=2039839912&single=true&output=csv"
 )
 
-BUYBACK_PER_GR = 2649920  # FIX: sesuai Excel (Rp2.649.920 / gr)
+BUYBACK_PER_GR = 2649920  # Rp2.649.920 / gr
 
 
 def _clean_rp(x):
-    """ 'Rp1,472,360' -> 1472360 """
     if pd.isna(x):
         return 0
     return int(re.sub(r"[^\d]", "", str(x)) or 0)
 
 
 def parse_hakabegold() -> Tuple[pd.DataFrame, str]:
-    # =====================================================
-    # 1. Baca CSV tanpa header
-    # =====================================================
+    # 1. Baca CSV
     raw = pd.read_csv(URL_HAKABEGOLD, header=None)
 
-    # =====================================================
-    # 2. Ambil hanya baris DATA
-    #    (kolom 0 = berat numerik)
-    # =====================================================
+    # 2. Ambil baris dengan berat numerik
     data = raw[pd.to_numeric(raw[0], errors="coerce").notna()].copy()
 
-    if data.empty:
-        raise ValueError("Data berat emas tidak ditemukan.")
-
-    # =====================================================
-    # 3. Mapping FINAL (SESUAI EXCEL KIRI)
-    # =====================================================
+    # 3. Mapping dasar
     df = pd.DataFrame({
         "vendor": "HK Logam Mulia",
         "weight_g": data[0].astype(float),
-        # ⬇️ INI KUNCI UTAMA
         "sell_idr": data[1].apply(_clean_rp),  # Harga End User TOTAL
-        "buyback_idr": data[0].astype(float) * BUYBACK_PER_GR,
         "stock": "Ready"
     })
 
-    # =====================================================
-    # 4. Final cleaning
-    # =====================================================
-    df = df[(df["weight_g"] > 0) & (df["sell_idr"] > 0)]
+    # 4. 🔒 DEDUP: ambil harga TERBESAR per berat
+    df = (
+        df.sort_values("sell_idr", ascending=False)
+          .drop_duplicates(subset="weight_g", keep="first")
+    )
+
+    # 5. Buyback = berat × buyback/gr
+    df["buyback_idr"] = df["weight_g"] * BUYBACK_PER_GR
+
+    # 6. Final sort
     df = df.sort_values("weight_g").reset_index(drop=True)
 
-    label = "HK Logam Mulia (Harga End User TOTAL, Buyback x Berat)"
+    label = "HK Logam Mulia (Final – No Duplicate)"
 
     return df, label
