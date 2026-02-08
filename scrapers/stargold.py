@@ -4,32 +4,34 @@ import pandas as pd
 from datetime import datetime
 from bs4 import BeautifulSoup
 
-# URL referensi tetap ada agar app.py tidak error
+# URL referensi (tetap sesuai app.py agar tidak error)
 URL_STARGOLD = "https://stargold.id/price/"
 
 def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
     """
-    Parser cerdas: 
-    1. Mencari file 'source web.txt' atau 'htlm.txt' yang Anda simpan.
-    2. Membedah tabel HTML secara presisi.
+    Parser 'Human-Logic':
+    1. Mencari file 'source web.txt' atau 'htlm.txt' di semua folder project.
+    2. Membedah isi source code yang Anda tempel secara manual.
     """
     final_html = html
     source_label = "Live Web"
 
-    # --- JALUR PENCARIAN FILE (RADAR) ---
+    # --- TAHAP 1: RADAR PENCARIAN FILE ---
+    # Jika app.py mengirim string kosong (karena fetch gagal), kita cari file manual Anda
     if not final_html or len(final_html) < 500:
-        # Daftar nama file yang mungkin Anda buat
-        filenames = ["source web.txt", "htlm.txt"]
+        # Daftar nama file yang mungkin Anda buat (variasi nama)
+        filenames = ["source web.txt", "htlm.txt", "source_web.txt"]
         
-        # Lokasi pencarian: folder utama, folder scrapers, atau folder kerja
-        curr_dir = os.path.dirname(os.path.abspath(__file__))
-        root_dir = os.path.dirname(curr_dir)
-        dirs = [root_dir, curr_dir, os.getcwd()]
+        # Cari di folder utama, folder scrapers, dan folder saat ini
+        curr_dir = os.path.dirname(os.path.abspath(__file__)) # folder scrapers
+        root_dir = os.path.dirname(curr_dir)                # folder utama
+        
+        search_dirs = [root_dir, curr_dir, os.getcwd()]
         
         found_content = ""
         found_name = ""
 
-        for d in dirs:
+        for d in search_dirs:
             for f in filenames:
                 path = os.path.join(d, f)
                 if os.path.exists(path):
@@ -41,17 +43,17 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
 
         if found_content:
             final_html = found_content
-            source_label = f"File Offline ({found_name})"
+            source_label = f"Manual Copy ({found_name})"
         else:
-            return pd.DataFrame(), "Gagal: File 'source web.txt' tidak ditemukan di folder project."
+            return pd.DataFrame(), "Gagal: File 'source web.txt' tidak ditemukan. Pastikan file ada di folder project."
 
-    # --- JALUR EKSTRAKSI (PARSING) ---
+    # --- TAHAP 2: EKSTRAKSI DATA (PARSER) ---
     try:
         soup = BeautifulSoup(final_html, "html.parser")
         all_data = []
 
-        # Cari tabel dengan class table-sm sesuai source web Anda
-        tables = soup.find_all("table", class_="table-sm")
+        # Mencari tabel harga (biasanya class table-sm di Stargold)
+        tables = soup.find_all("table")
         
         for table in tables:
             rows = table.find_all("tr")
@@ -64,22 +66,22 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
                     raw_sell = cols[1].get_text(strip=True)
                     raw_buyback = cols[2].get_text(strip=True)
 
-                    # Pastikan ini baris harga (mengandung teks 'gr')
+                    # Filter: Hanya baris yang berisi data emas (ada teks 'gr')
                     if "gr" in raw_name:
                         try:
-                            # 1. Deteksi Vendor
+                            # 1. Tentukan Vendor
                             vendor = "STARGOLD"
                             if "antam" in raw_name: vendor = "ANTAM"
                             elif "ubs" in raw_name: vendor = "UBS"
                             elif "emaskita" in raw_name: vendor = "EMASKITA"
 
-                            # 2. Bersihkan Berat (0,1 gr -> 0.1)
-                            # Handle koma desimal Indonesia
+                            # 2. Bersihkan Berat: '0,5 gr' -> 0.5
+                            # Ganti koma Indonesia jadi titik sistem
                             w_str = raw_name.replace("gr", "").replace(",", ".").strip()
                             # Ambil angka paling belakang (contoh: 'antam 1' -> '1')
                             w_val = float(w_str.split()[-1])
 
-                            # 3. Bersihkan Harga (Hapus 'Rp', '.', dan spasi)
+                            # 3. Bersihkan Harga: Ambil angka saja
                             s_val = "".join(filter(str.isdigit, raw_sell))
                             b_val = "".join(filter(str.isdigit, raw_buyback))
 
@@ -94,7 +96,7 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
                             continue
 
         if not all_data:
-            return pd.DataFrame(), f"Data kosong. Cek apakah isi {source_label} sudah benar."
+            return pd.DataFrame(), f"Data tidak ditemukan di {source_label}. Periksa isi filenya."
 
         # Finalisasi DataFrame
         df = pd.DataFrame(all_data)
