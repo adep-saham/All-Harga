@@ -10,7 +10,7 @@ from typing import Tuple
 # =========================================================
 # Contoh: "https://1drv.ms/x/s!AmX_..." atau link panjang onedrive.live.com
 # Pastikan settingannya "Anyone with the link" (Siapa saja)
-MY_ONEDRIVE_LINK = "https://1drv.ms/x/c/7181a7df3eab3581/IQAdDl52fuvfQqpHMQUXarpPAQjSrmRAdGBYh6zQE5QIlF8?e=GMfdQD"
+MY_ONEDRIVE_LINK = "https://1drv.ms/x/c/7181a7df3eab3581/IQAdDl52fuvfQqpHMQUXarpPAQjSrmRAdGBYh6zQE5QIlF8"
 
 # Dummy variable
 URL_HAKABEGOLD = MY_ONEDRIVE_LINK
