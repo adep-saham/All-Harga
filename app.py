@@ -14,18 +14,20 @@ from scrapers.indogold import parse_indogold, URL_INDOGOLD
 from scrapers.hakabegold import parse_hakabegold, URL_HAKABEGOLD
 
 # =========================================================
-# 2. KONFIGURASI HALAMAN
+# 2. PAGE CONFIG
 # =========================================================
-st.set_page_config(page_title="All Harga Emas", layout="wide")
+st.set_page_config(
+    page_title="All Harga Emas",
+    layout="wide"
+)
 
 # =========================================================
 # 3. HELPERS
 # =========================================================
-def format_rp(x: int) -> str:
+def format_rp(x) -> str:
     try:
-        if x == 0:
-            return "Rp0"
-        return f"Rp{int(x):,}".replace(",", ".")
+        x = int(x)
+        return f"Rp{x:,}".replace(",", ".")
     except:
         return "Rp0"
 
@@ -36,8 +38,7 @@ def fetch_html(url: str) -> str:
         r = requests.get(url, headers=headers, timeout=30)
         r.raise_for_status()
         return r.text
-    except Exception as e:
-        st.error(f"Gagal mengambil HTML dari {url}: {e}")
+    except:
         return ""
 
 # =========================================================
@@ -47,7 +48,14 @@ st.title("📊 Monitoring Harga Emas")
 
 source = st.sidebar.radio(
     "Sumber Data",
-    ["Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold", "HK Logam Mulia"],
+    [
+        "Galeri24",
+        "StarGold",
+        "AnekaLogam",
+        "HRTA",
+        "IndoGold",
+        "HK Logam Mulia"
+    ],
     index=5
 )
 
@@ -57,7 +65,7 @@ URLS = {
     "AnekaLogam": URL_ANEKALOGAM,
     "HRTA": URL_HRTA,
     "IndoGold": URL_INDOGOLD,
-    "HK Logam Mulia": URL_HAKABEGOLD,
+    "HK Logam Mulia": URL_HAKABEGOLD,  # hanya untuk ditampilkan
 }
 
 current_url = URLS.get(source, "")
@@ -72,15 +80,20 @@ if st.button("🚀 Ambil Data"):
             df = pd.DataFrame()
             update_label = ""
 
+            # ===== HK LOGAM MULIA (GOOGLE SHEETS – NO HTML) =====
             if source == "HK Logam Mulia":
                 df, update_label = parse_hakabegold()
 
+            # ===== HRTA =====
             elif source == "HRTA":
                 df, update_label = parse_hrta("")
 
+            # ===== HTML BASED SCRAPERS =====
             else:
                 html = fetch_html(current_url)
-                if html:
+                if not html:
+                    st.warning("HTML kosong / gagal diambil.")
+                else:
                     if source == "Galeri24":
                         df, update_label = parse_galeri24(html)
                     elif source == "StarGold":
@@ -90,14 +103,19 @@ if st.button("🚀 Ambil Data"):
                     elif source == "IndoGold":
                         df, update_label = parse_indogold(html)
 
+        # =====================================================
+        # 6. DISPLAY RESULT
+        # =====================================================
         if df is not None and not df.empty:
             st.subheader(update_label)
             st.success(f"Sukses! {len(df)} data ditemukan.")
 
-            for v in df["vendor"].unique():
-                st.markdown(f"### {v}")
-                sub = df[df["vendor"] == v].copy()
-                sub = sub.sort_values("weight_g")
+            for vendor in df["vendor"].unique():
+                st.markdown(f"### {vendor}")
+                sub = df[df["vendor"] == vendor].copy()
+
+                if "weight_g" in sub.columns:
+                    sub = sub.sort_values("weight_g")
 
                 display = pd.DataFrame({
                     "Berat": sub["weight_g"].apply(lambda x: f"{x:g} gr"),
@@ -108,6 +126,9 @@ if st.button("🚀 Ambil Data"):
 
                 st.table(display)
 
+            # =================================================
+            # 7. DOWNLOAD
+            # =================================================
             st.divider()
             c1, c2 = st.columns(2)
 
