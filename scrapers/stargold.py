@@ -1,65 +1,69 @@
+from __future__ import annotations
+
 from datetime import datetime
+from io import StringIO
 import pandas as pd
 
-# === SOURCE RESMI (Google Sheets publish CSV) ===
-STARGOLD_SHEET_CSV = (
+# =========================================================
+# STAR GOLD SOURCE: Google Sheets Publish CSV (bukan scrape stargold.id)
+# =========================================================
+URL_STARGOLD = (
     "https://docs.google.com/spreadsheets/d/e/"
     "2PACX-1vSVUOrPaB273nGNBr_7h4ZDKWKd3HvEtmQuN4NXK1MDibiDxmB3J4aH1uE2bhn0IpJju1BgeoBJsfad"
     "/pub?gid=2127782410&single=true&output=csv"
 )
 
-SOURCE_SITE = "stargold"
-SOURCE_URL = "https://stargold.id/price/"
-
-WEIGHT_ORDER = [0.1, 0.25, 0.5, 1, 2, 3, 4, 5, 10, 25, 50, 100, 250, 500, 1000]
-WEIGHT_RANK = {w: i for i, w in enumerate(WEIGHT_ORDER)}
+# Optional (buat info/debug kalau perlu)
+URL_STARGOLD_SITE = "https://stargold.id/price/"
 
 
-def weight_sort_key(w: float):
-    if w in WEIGHT_RANK:
-        return (0, WEIGHT_RANK[w])
-    return (1, w)
+def _clean_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize columns & types to match app.py expectations."""
+    # kolom wajib
+    required = {"vendor", "weight_g", "sell_idr", "buyback_idr"}
+    missing = required - set(df.columns)
+    if missing:
+        raise RuntimeError(f"StarGold CSV: kolom wajib tidak lengkap. Missing={sorted(missing)}")
 
-
-def parse_stargold() -> tuple[pd.DataFrame, str]:
-    """
-    Load StarGold ALL VENDOR data from Google Sheets CSV
-    Return:
-      - DataFrame standar MI
-      - update_label
-    """
-
-    df = pd.read_csv(STARGOLD_SHEET_CSV)
-
-    if df.empty:
-        raise RuntimeError("StarGold CSV kosong atau tidak bisa dibaca.")
-
-    # === NORMALISASI ===
+    df = df.copy()
     df["vendor"] = df["vendor"].astype(str).str.upper().str.strip()
     df["weight_g"] = pd.to_numeric(df["weight_g"], errors="coerce")
     df["sell_idr"] = pd.to_numeric(df["sell_idr"], errors="coerce").fillna(0).astype(int)
     df["buyback_idr"] = pd.to_numeric(df["buyback_idr"], errors="coerce").fillna(0).astype(int)
 
+    # buang baris invalid
     df = df[df["weight_g"].notna()]
     df = df[df["weight_g"] > 0]
 
-    snapshot_ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    update_label = f"Google Sheets Update: {snapshot_ts}"
+    # sort rapi
+    df = df.sort_values(["vendor", "weight_g"]).reset_index(drop=True)
+    return df
 
-    # === STANDAR KOLOM MI ===
-    df["snapshot_ts"] = snapshot_ts
-    df["update_label"] = update_label
-    df["source_site"] = SOURCE_SITE
-    df["source_url"] = SOURCE_URL
 
-    # === SORT RAPI ===
-    df["__w0"] = df["weight_g"].map(lambda x: weight_sort_key(float(x))[0])
-    df["__w1"] = df["weight_g"].map(lambda x: weight_sort_key(float(x))[1])
+def parse_stargold(html: str) -> tuple[pd.DataFrame, str]:
+    """
+    Kompatibel dengan app.py yang memanggil parse_stargold(html).
 
-    df = (
-        df.sort_values(["vendor", "__w0", "__w1"])
-          .drop(columns=["__w0", "__w1"])
-          .reset_index(drop=True)
-    )
+    Behavior:
+    - Kalau `html` berisi CSV (karena app.py fetch URL_STARGOLD), kita parse dari string itu.
+    - Kalau `html` kosong / bukan CSV, kita fallback read langsung dari URL_STARGOLD.
+    """
+    df: pd.DataFrame
+
+    # 1) coba parse dari html string sebagai CSV (kasus umum: fetch_html(URL_STARGOLD) -> text csv)
+    try:
+        if isinstance(html, str) and ("vendor" in html.lower()) and ("weight_g" in html.lower()):
+            df = pd.read_csv(StringIO(html))
+        else:
+            raise ValueError("Not a CSV payload")
+    except Exception:
+        # 2) fallback: read langsung dari URL (lebih robust)
+        df = pd.read_csv(URL_STARGOLD)
+
+    df = _clean_df(df)
+
+    # update label
+    ts = datetime.now().strftime("%d/%m/%y %H:%M:%S")
+    update_label = f"StarGold (All Vendors) - Updated: {ts}"
 
     return df, update_label
