@@ -9,22 +9,23 @@ URL_STARGOLD = "https://stargold.id/price/"
 
 def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
     """
-    Versi Anti-Blokir HTTP/2: Memaksa protokol HTTP/1.1 untuk menghindari stream cancel.
+    Versi Perbaikan: Menggunakan nilai integer untuk versi HTTP agar kompatibel 
+    dengan semua versi curl_cffi dan tetap menembus blokir firewall.
     """
     final_html = html
     source_info = "Live Web"
 
     if not final_html:
         try:
-            # Menggunakan curl_cffi untuk meniru Chrome 110
-            # KUNCI: Menambahkan http_version=requests.HttpVersion.v1_1
+            # Menggunakan impersonate chrome110 untuk meniru sidik jari browser
+            # Nilai 1 pada http_version memaksa penggunaan protokol HTTP/1.1
             response = requests.get(
                 URL_STARGOLD,
                 impersonate="chrome110",
-                http_version=requests.HttpVersion.v1_1, # Memaksa HTTP/1.1
+                http_version=1, 
                 timeout=30,
                 headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                     "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8",
                     "Referer": "https://www.google.com/",
                     "Cache-Control": "no-cache"
@@ -33,20 +34,20 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
             response.raise_for_status()
             final_html = response.text
         except Exception as e:
-            # Jika tetap gagal, gunakan file htlm.txt yang Anda buat
+            # Jika tetap gagal karena IP diblokir, gunakan fallback ke file lokal
             if os.path.exists("htlm.txt"):
                 with open("htlm.txt", "r", encoding="utf-8") as f:
                     final_html = f.read()
                 source_info = "Manual (htlm.txt)"
             else:
-                return pd.DataFrame(), f"Blokir Protokol: {str(e)}"
+                return pd.DataFrame(), f"Blokir Server: {str(e)}"
 
-    # PROSES PARSING (Sesuai htlm.txt)
+    # PROSES PARSING DATA (Disesuaikan dengan file htlm.txt Anda)
     try:
         soup = BeautifulSoup(final_html, "html.parser")
         all_data = []
         
-        # Cari tabel (class table-sm di htlm.txt)
+        # Mencari tabel dengan class table-sm yang berisi data harga
         tables = soup.find_all("table", class_="table-sm")
         
         for table in tables:
@@ -58,13 +59,15 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
                     raw_sell = cols[1].get_text(strip=True)
                     raw_buyback = cols[2].get_text(strip=True)
 
+                    # Filter hanya baris yang mengandung satuan berat 'gr'
                     if "gr" in raw_name:
                         try:
-                            # Bersihkan Berat (Indo: 0,1 gr -> 0.1)
+                            # Bersihkan berat: '0,1 gr' -> 0.1
                             w_val = raw_name.replace("gr", "").replace(",", ".").strip()
-                            w_val = w_val.split()[-1] # Ambil angka terakhir jika ada nama merek
+                            # Ambil bagian angka jika ada teks merek di depan berat
+                            w_val = w_val.split()[-1] 
 
-                            # Bersihkan Harga
+                            # Ambil angka saja untuk harga (menghapus Rp dan titik ribuan)
                             s_val = "".join(filter(str.isdigit, raw_sell))
                             b_val = "".join(filter(str.isdigit, raw_buyback))
 
@@ -79,8 +82,9 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
                             continue
 
         if not all_data:
-            return pd.DataFrame(), "Data tidak ditemukan. Pastikan isi htlm.txt lengkap."
+            return pd.DataFrame(), f"Data kosong di {source_info}. Cek isi HTML."
 
+        # Membuat DataFrame dan mengurutkan berdasarkan berat
         df = pd.DataFrame(all_data)
         df = df.drop_duplicates(subset=["weight_g", "sell_idr"]).sort_values("weight_g").reset_index(drop=True)
         
@@ -88,4 +92,4 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
         return df, f"StarGold ({source_info}) - {ts}"
 
     except Exception as e:
-        return pd.DataFrame(), f"Error Parse: {str(e)}"
+        return pd.DataFrame(), f"Gagal Urai Data: {str(e)}"
