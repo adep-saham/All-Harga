@@ -6,3 +6,4 @@ openpyxl
 gspread
 google-auth
 cloudscraper
+curl_cffi
