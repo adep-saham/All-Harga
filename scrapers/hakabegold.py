@@ -1,13 +1,14 @@
 import pandas as pd
 import requests
+import re
 from io import BytesIO
 from typing import Tuple
 
-# Ini adalah Link Download Resmi (Direct Stream)
-# Kita tidak scraping webnya, kita langsung minta filenya ke OneDrive baik-baik.
-# resid = ID File Unik
-# authkey = Kunci Publik File
-DIRECT_DOWNLOAD_URL = "https://onedrive.live.com/download?resid=7181A7DF3EAB3581!106&authkey=!AI3AF18"
+# =========================================================
+# KONFIGURASI KONEKSI ONEDRIVE
+# =========================================================
+# Variabel ini sekarang bernama URL_HAKABEGOLD agar sesuai dengan import di app.py
+URL_HAKABEGOLD = "https://onedrive.live.com/download?resid=7181A7DF3EAB3581!106&authkey=!AI3AF18"
 
 def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
     """
@@ -21,11 +22,12 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         
-        response = requests.get(DIRECT_DOWNLOAD_URL, headers=headers, timeout=30)
+        # Gunakan variable URL_HAKABEGOLD yang sudah disesuaikan
+        response = requests.get(URL_HAKABEGOLD, headers=headers, timeout=30)
         
         # Cek apakah diizinkan (200 OK)
         if response.status_code != 200:
-            return pd.DataFrame(), f"HK Logam Mulia — Server sibuk/File tidak dapat diakses (Code: {response.status_code})"
+            return pd.DataFrame(), f"HK Logam Mulia — Gagal Akses (Code: {response.status_code})"
 
         # 2. Baca Excel
         # Kita gunakan engine openpyxl untuk membaca format .xlsx modern
@@ -79,7 +81,6 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
                             full_text = " ".join(df.astype(str).values.flatten()).lower()
                             
                             # Regex Cari Tanggal (cth: 07 Feb 2026)
-                            import re
                             dt = re.search(r"(\d{1,2}\s+[a-z]{3,}\s+\d{4})", full_text)
                             if dt: label += f" — {dt.group(1).title()}"
                             
@@ -97,7 +98,7 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
             if not final_df.empty: break
 
         if final_df.empty:
-            return pd.DataFrame(), "HK Logam Mulia — Tabel harga tidak ditemukan di dalam file"
+            return pd.DataFrame(), "HK Logam Mulia — Tabel harga tidak ditemukan"
 
         return final_df.sort_values("weight_g").reset_index(drop=True), label
 
@@ -106,17 +107,18 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
 
 def _clean_number(val, is_float=False):
     """Membersihkan angka dari teks kotor (Rp, titik, koma, gr)"""
-    import re
     if pd.isna(val) or val == "": return 0
     s = str(val).lower().replace("gr", "").replace("gram", "").strip()
     try:
         if is_float:
             # Ganti koma jadi titik (indo -> us format)
             s = s.replace(",", ".")
-            return float(re.findall(r"[-+]?\d*\.\d+|\d+", s)[0])
+            matches = re.findall(r"[-+]?\d*\.\d+|\d+", s)
+            return float(matches[0]) if matches else 0
         else:
             # Ambil angka bulat saja
             s = s.split(",")[0].split(".")[0] # Buang desimal
-            return int(re.sub(r"[^\d]", "", s))
+            cleaned = re.sub(r"[^\d]", "", s)
+            return int(cleaned) if cleaned else 0
     except:
         return 0
