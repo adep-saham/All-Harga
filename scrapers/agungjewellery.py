@@ -6,72 +6,74 @@ from typing import Tuple
 
 URL_AGUNG = "https://agungjewellery.com/harga-lm-2/"
 
-# Samakan buyback policy (sementara)
-BUYBACK_PER_GR = 2649920  # bisa kamu ubah / override nanti
 
-
-def _clean_rp(text: str) -> int:
-    """
-    Bersihkan format Rupiah:
-    'Rp 1.472.360,-' -> 1472360
-    """
-    if not text:
+# =====================================================
+# HELPERS
+# =====================================================
+def _clean_rp(x: str) -> int:
+    """ '1.715.000' -> 1715000 """
+    if not x:
         return 0
-    return int(re.sub(r"[^\d]", "", text) or 0)
+    return int(re.sub(r"[^\d]", "", x) or 0)
 
 
-def _clean_weight(text: str) -> float:
+def _extract_weight(text: str) -> float:
     """
-    '0,5 gram' -> 0.5
-    '1 gram'   -> 1.0
+    '0.5 gr (Certicard)' -> 0.5
+    '100gr (Certicard) RM#' -> 100
     """
     if not text:
         return 0.0
-    text = text.lower().replace("gram", "").replace("gr", "").strip()
+    text = text.lower()
     text = text.replace(",", ".")
-    try:
-        return float(text)
-    except ValueError:
-        return 0.0
+    m = re.search(r"([\d\.]+)\s*gr", text)
+    return float(m.group(1)) if m else 0.0
 
 
+# =====================================================
+# MAIN PARSER
+# =====================================================
 def parse_agungjewellery() -> Tuple[pd.DataFrame, str]:
-    # =====================================================
-    # 1. Request halaman
-    # =====================================================
-    resp = requests.get(URL_AGUNG, timeout=20)
+    resp = requests.get(URL_AGUNG, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
     resp.raise_for_status()
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # =====================================================
-    # 2. Cari tabel harga
-    # =====================================================
-    table = soup.find("table")
+    # =================================================
+    # 1. Ambil tabel LM (ID FIX)
+    # =================================================
+    table = soup.find("table", id="table_17973856")
     if not table:
-        raise ValueError("Tabel harga tidak ditemukan di Agung Jewellery.")
+        raise ValueError("Tabel harga Agung Jewellery tidak ditemukan.")
 
-    rows = table.find_all("tr")
+    rows = table.find("tbody").find_all("tr")
 
     records = []
 
-    # =====================================================
-    # 3. Loop baris tabel
-    # =====================================================
+    # =================================================
+    # 2. Loop baris & FILTER LM CERTICARD
+    # =================================================
     for row in rows:
-        cols = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
-        if len(cols) < 2:
+        cols = [c.get_text(strip=True) for c in row.find_all("td")]
+        if len(cols) != 3:
             continue
 
-        weight = _clean_weight(cols[0])
-        price = _clean_rp(cols[1])
+        pecahan, harga_jual, harga_buyback = cols
 
-        if weight > 0 and price > 0:
+        # 🔒 FILTER UTAMA: hanya LM Certicard
+        if "(certicard)" not in pecahan.lower():
+            continue
+
+        weight = _extract_weight(pecahan)
+        sell = _clean_rp(harga_jual)
+        buyback = _clean_rp(harga_buyback)
+
+        if weight > 0 and sell > 0 and buyback > 0:
             records.append({
                 "vendor": "Agung Jewellery",
                 "weight_g": weight,
-                "sell_idr": price,
-                "buyback_idr": int(weight * BUYBACK_PER_GR),
+                "sell_idr": sell,
+                "buyback_idr": buyback,
                 "stock": "Ready"
             })
 
@@ -80,17 +82,16 @@ def parse_agungjewellery() -> Tuple[pd.DataFrame, str]:
 
     df = pd.DataFrame(records)
 
-    # =====================================================
-    # 4. Dedup: 1 berat = 1 baris
-    #    Ambil harga TERKECIL (harga presisi)
-    # =====================================================
+    # =================================================
+    # 3. Dedup & sort
+    # =================================================
     df = (
         df.sort_values("sell_idr", ascending=True)
           .drop_duplicates(subset="weight_g", keep="first")
+          .sort_values("weight_g")
+          .reset_index(drop=True)
     )
 
-    df = df.sort_values("weight_g").reset_index(drop=True)
-
-    label = "Agung Jewellery (LM)"
+    label = "Agung Jewellery (LM Certicard)"
 
     return df, label
