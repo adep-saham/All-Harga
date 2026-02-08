@@ -4,91 +4,76 @@ import re
 from io import BytesIO
 from typing import Tuple
 
-# Target Website
-SOURCE_WEBSITE = "https://www.logammuliahk.com/"
-# Dummy variable agar app.py tidak error import
-URL_HAKABEGOLD = SOURCE_WEBSITE
+# =========================================================
+# DATA KUNCI (DIBACA DARI FILE HTLM.TXT YANG ANDA KIRIM)
+# =========================================================
+# Kita melewati proses scraping website dan langsung pakai link yang tertanam di sana.
+CID = "f82ea6cd27a31b67"
+TOKEN = "UQRnG6MnzaYuIID4agAAAAAAAJmymdJnSywKmuw"
 
-def get_smart_download_link():
+# Dummy variable agar app.py tidak error
+URL_HAKABEGOLD = f"https://1drv.ms/x/c/{CID}/{TOKEN}"
+
+def get_excel_content(cid, token) -> requests.Response:
     """
-    Mencari link OneDrive di website logammuliahk.com dan
-    mengubahnya menjadi Link Download Langsung (Bypass Web View).
+    Mencoba 3 metode download berbeda secara berurutan.
+    Jika satu gagal, coba yang lain.
     """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Encoding": "gzip, deflate, br"
+    }
+
+    # METODE 1: Link 1drv.ms dengan parameter download
+    # Ini metode paling modern.
+    url_1 = f"https://1drv.ms/x/c/{cid}/{token}?download=1"
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        
-        # 1. Fetch Halaman Utama
-        response = requests.get(SOURCE_WEBSITE, headers=headers, timeout=30)
-        if response.status_code != 200:
-            return None, f"Gagal akses website utama (Code: {response.status_code})"
-            
-        html = response.text
-        
-        # 2. Cari iframe OneDrive
-        # Pola 1: Link Modern (1drv.ms) -> Kita ekstrak CID dan Token
-        # Contoh: https://1drv.ms/x/c/f82ea6cd27a31b67/UQRnG6MnzaYuIID4agAAAAAAAJmymdJnSywKmuw
-        match_modern = re.search(r'src=[\'"]https://1drv\.ms/x/c/([a-zA-Z0-9]+)/([a-zA-Z0-9_\-]+).*?[\'"]', html)
-        
-        if match_modern:
-            cid = match_modern.group(1)
-            token = match_modern.group(2)
-            # REKONSTRUKSI LINK: Gunakan format API lama yang lebih stabil
-            # resid biasanya = CID (uppercase) + "!106" (berdasarkan histori file mereka)
-            direct_url = f"https://onedrive.live.com/download?resid={cid.upper()}!106&authkey={token}"
-            return direct_url, None
+        # allow_redirects=True sangat PENTING di sini
+        r = requests.get(url_1, headers=headers, timeout=30, allow_redirects=True)
+        if r.status_code == 200 and "text/html" not in r.headers.get("Content-Type", "").lower():
+            return r
+    except: pass
 
-        # Pola 2: Link Klasik (onedrive.live.com/embed)
-        match_classic = re.search(r'src=[\'"]https://onedrive\.live\.com/embed\?resid=([a-zA-Z0-9!]+)&authkey=([a-zA-Z0-9!_\-]+).*?[\'"]', html)
-        
-        if match_classic:
-            resid = match_classic.group(1)
-            authkey = match_classic.group(2)
-            direct_url = f"https://onedrive.live.com/download?resid={resid}&authkey={authkey}"
-            return direct_url, None
+    # METODE 2: Link onedrive.live.com dengan format 'download'
+    # Kita rakit ulang linknya secara manual
+    # resid biasanya formatnya: CID (huruf besar) + "!106"
+    resid = cid.upper() + "!106"
+    url_2 = f"https://onedrive.live.com/download?cid={cid}&resid={resid}&authkey={token}"
+    try:
+        r = requests.get(url_2, headers=headers, timeout=30)
+        if r.status_code == 200 and "text/html" not in r.headers.get("Content-Type", "").lower():
+            return r
+    except: pass
 
-        # Jika tidak ketemu pola spesifik, cari sembarang link 1drv.ms lalu paksa download=1
-        match_generic = re.search(r'src=[\'"](https://1drv\.ms/[^\'"]+)[\'"]', html)
-        if match_generic:
-            raw_url = match_generic.group(1)
-            # Bersihkan query params lama, ganti dengan download=1
-            clean_url = raw_url.split('?')[0]
-            return f"{clean_url}?download=1", None
-
-        return None, "Tidak ditemukan iframe OneDrive yang valid di halaman utama."
-
-    except Exception as e:
-        return None, f"Error saat mencari link: {str(e)}"
+    # METODE 3: Link onedrive.live.com Alternatif (Tanpa CID di depan)
+    url_3 = f"https://onedrive.live.com/download?resid={resid}&authkey={token}"
+    try:
+        r = requests.get(url_3, headers=headers, timeout=30)
+        return r # Return apa adanya (terakhir)
+    except: pass
+    
+    return None
 
 def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
     try:
-        # LANGKAH 1: Dapatkan Link Download Cerdas
-        download_url, error_msg = get_smart_download_link()
+        # --- LANGKAH 1: Download File (Bruteforce) ---
+        response = get_excel_content(CID, TOKEN)
         
-        if not download_url:
-            return pd.DataFrame(), f"HK Logam Mulia — {error_msg}"
-
-        # LANGKAH 2: Download File
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            "Accept": "*/*"
-        }
-        # allow_redirects=True sangat penting untuk link 1drv.ms
-        response = requests.get(download_url, headers=headers, timeout=60, allow_redirects=True)
-        
+        if not response:
+            return pd.DataFrame(), "HK Logam Mulia — Gagal koneksi (Network Error)"
+            
         if response.status_code != 200:
             return pd.DataFrame(), f"HK Logam Mulia — Gagal Download (Code: {response.status_code})"
 
-        # Cek Content-Type untuk memastikan bukan HTML
-        ct = response.headers.get("Content-Type", "").lower()
-        if "text/html" in ct:
-            return pd.DataFrame(), "HK Logam Mulia — Link mengarah ke Web View (HTML), bukan File Excel. Gagal bypass."
+        # Cek apakah isinya HTML
+        if "text/html" in response.headers.get("Content-Type", "").lower():
+             return pd.DataFrame(), "HK Logam Mulia — Gagal. Link mengarah ke Web View, bukan File Excel."
 
-        # LANGKAH 3: Proses Excel
+        # --- LANGKAH 2: Proses Excel ---
         try:
             xls_data = BytesIO(response.content)
-            # Baca semua sheet karena posisi data bisa berubah
+            # Baca semua sheet
             xls = pd.read_excel(xls_data, sheet_name=None, header=None, engine='openpyxl')
         except Exception:
             return pd.DataFrame(), "HK Logam Mulia — File rusak atau format bukan Excel valid."
@@ -97,7 +82,7 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
         label = "HK Logam Mulia"
         buyback_val = 0
 
-        # LANGKAH 4: Scanning Data (Logic Stabil)
+        # --- LANGKAH 3: Scanning Data ---
         for sheet_name, df in xls.items():
             # Scan 50 baris pertama
             for i, row in df.head(50).iterrows():
@@ -114,6 +99,7 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
                     c_stok = next((c for c in df.columns if "stock" in c or "stok" in c), None)
                     
                     if c_berat and c_jual:
+                        # Cleaning Data
                         data["weight_g"] = data[c_berat].apply(lambda x: _clean_number(x, is_float=True))
                         data["sell_idr"] = data[c_jual].apply(lambda x: _clean_number(x, is_float=False))
                         
@@ -142,7 +128,7 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
             if not final_df.empty: break
 
         if final_df.empty:
-            return pd.DataFrame(), "HK Logam Mulia — Tabel Excel tidak ditemukan (Struktur Berubah)."
+            return pd.DataFrame(), "HK Logam Mulia — Struktur tabel Excel berubah/tidak ditemukan."
 
         return final_df.sort_values("weight_g").reset_index(drop=True), label
 
