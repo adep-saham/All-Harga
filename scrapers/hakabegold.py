@@ -1,81 +1,55 @@
 import pandas as pd
 import requests
-import base64
 import re
 from io import BytesIO
 from typing import Tuple
 
 # =========================================================
-# LINK BERSIH (HASIL DECODE DARI TOKEN 'REDEEM' ANDA)
+# LINK RAKITAN MANUAL (HASIL EKSTRAK DARI DATA ANDA)
 # =========================================================
-# Ini adalah link asli yang tersembunyi di balik link panjang tadi.
-# Link ini VALID dan bisa diproses oleh API.
-TARGET_LINK = "https://1drv.ms/x/c/f82ea6cd27a31b67/UQRnG6MnzaYuIID4agAAAAAAJmymdJnSywKmuw"
+# Kita menggabungkan Resid + Authkey untuk bypass halaman Web View.
+RESID = "F82EA6CD27A31B67!106"
+AUTHKEY = "UQRnG6MnzaYuIID4agAAAAAAJmymdJnSywKmuw"
+
+# Link ini akan langsung memicu download file .xlsx
+MANUAL_LINK = f"https://onedrive.live.com/download?resid={RESID}&authkey={AUTHKEY}"
 
 # Dummy variable
-URL_HAKABEGOLD = TARGET_LINK
-
-def get_api_download_link(share_url):
-    """
-    Menggunakan OneDrive API v1.0 untuk mengubah Link Share menjadi Link Download Binary.
-    Ini adalah cara paling resmi dan stabil untuk bypass Web View.
-    """
-    try:
-        # 1. Encode URL ke Base64
-        base64_value = base64.b64encode(share_url.encode("utf-8")).decode("utf-8")
-        
-        # 2. Format sesuai standar API OneDrive (URL-Safe)
-        #    a. Tambah prefix 'u!'
-        #    b. Hapus padding '=' di akhir
-        #    c. Ganti '/' jadi '_' dan '+' jadi '-'
-        encoded_url = "u!" + base64_value.rstrip("=").replace("/", "_").replace("+", "-")
-        
-        # 3. Panggil API
-        # Endpoint ini akan otomatis redirect ke file .xlsx aslinya
-        return f"https://api.onedrive.com/v1.0/shares/{encoded_url}/root/content"
-
-    except Exception as e:
-        print(f"Error encoding link: {e}")
-        return None
+URL_HAKABEGOLD = MANUAL_LINK
 
 def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
     try:
-        # LANGKAH 1: Dapatkan Link Download dari API
-        api_url = get_api_download_link(TARGET_LINK)
-        
-        if not api_url:
-            return pd.DataFrame(), "Gagal memproses link OneDrive."
-
-        # LANGKAH 2: Download File
+        # 1. Download File
+        # Gunakan User-Agent standar agar tidak diblokir
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
         
-        # Timeout 60 detik
-        response = requests.get(api_url, headers=headers, timeout=60)
+        # Timeout 30 detik sudah cukup untuk direct download
+        response = requests.get(MANUAL_LINK, headers=headers, timeout=30)
         
-        # API OneDrive jika sukses biasanya redirect (302) lalu memberi file (200)
+        # Cek Status
         if response.status_code != 200:
-            return pd.DataFrame(), f"Gagal Akses API (Code: {response.status_code}). Token mungkin expired."
+            return pd.DataFrame(), f"HK Logam Mulia — Gagal Download (Code: {response.status_code})"
 
-        # LANGKAH 3: Validasi Konten (Anti HTML)
+        # Cek Header Content-Type (Pastikan bukan HTML)
         content_type = response.headers.get("Content-Type", "").lower()
         if "text/html" in content_type:
-             return pd.DataFrame(), "Gagal. API mengembalikan halaman Login (Link butuh autentikasi ulang)."
+             return pd.DataFrame(), "HK Logam Mulia — Gagal. Token AuthKey mungkin sudah kadaluarsa."
 
-        # LANGKAH 4: Baca Excel
+        # 2. Baca Excel
         try:
             xls_data = BytesIO(response.content)
-            # Baca semua sheet tanpa header
+            # Baca semua sheet
             xls = pd.read_excel(xls_data, sheet_name=None, header=None, engine='openpyxl')
         except Exception:
-            return pd.DataFrame(), "Format file rusak atau bukan Excel."
+            return pd.DataFrame(), "HK Logam Mulia — File rusak atau format bukan Excel."
 
         final_df = pd.DataFrame()
         label = "HK Logam Mulia"
         buyback_val = 0
 
-        # LANGKAH 5: Scanning Data (Mencari Tabel Harga)
+        # 3. Scanning Data
         for sheet_name, df in xls.items():
             # Scan 50 baris pertama
             for i, row in df.head(50).iterrows():
@@ -101,6 +75,7 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
                         else:
                             data["stock"] = "Ready"
                         
+                        # Filter Data (Harga > 0)
                         valid = data[(data["weight_g"] > 0) & (data["sell_idr"] > 0)].copy()
                         
                         if not valid.empty:
@@ -121,12 +96,12 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
             if not final_df.empty: break
 
         if final_df.empty:
-            return pd.DataFrame(), "Tabel harga tidak ditemukan (Struktur Excel berubah)."
+            return pd.DataFrame(), "HK Logam Mulia — Struktur tabel Excel berubah."
 
         return final_df.sort_values("weight_g").reset_index(drop=True), label
 
     except Exception as e:
-        return pd.DataFrame(), f"Error System: {str(e)}"
+        return pd.DataFrame(), f"HK Logam Mulia — Error: {str(e)}"
 
 def _clean_number(val, is_float=False):
     if pd.isna(val) or val == "": return 0
