@@ -4,70 +4,68 @@ import pandas as pd
 from datetime import datetime
 from bs4 import BeautifulSoup
 
+# PENTING: Variabel ini harus ada karena dipanggil oleh app.py
+URL_STARGOLD = "https://stargold.id/price/"
+
 def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
     """
-    Parser 'Hacker Baik': Fokus 100% pada pembacaan fail 'source web.txt'
-    yang anda muat naik ke GitHub.
+    Parser cerdas untuk membaca data dari 'source web.txt' di Streamlit Cloud.
     """
     final_html = html
     source_label = "Live Web"
 
-    # --- TAHAP 1: RADAR PENCARIAN FAIL DI STREAMLIT CLOUD ---
+    # --- RADAR PENCARIAN FILE ---
     if not final_html or len(final_html) < 500:
-        # Laluan yang dikesan oleh ralat anda tadi
-        root_path = "/mount/src/all-harga"
+        # Nama file yang Anda upload ke GitHub
         target_file = "source web.txt"
         
+        # Lokasi standard di Streamlit Cloud
+        root_path = "/mount/src/all-harga"
         full_path = os.path.join(root_path, target_file)
         
-        # Jika tidak jumpa di root_path, cari di folder semasa
-        if not os.path.exists(full_path):
-            full_path = target_file
-
+        # Cek apakah file ada
         if os.path.exists(full_path):
             with open(full_path, "r", encoding="utf-8") as f:
                 final_html = f.read()
             source_label = f"Offline ({target_file})"
+        elif os.path.exists(target_file):
+            with open(target_file, "r", encoding="utf-8") as f:
+                final_html = f.read()
+            source_label = f"Offline ({target_file})"
         else:
-            return pd.DataFrame(), f"Gagal: Sila muat naik '{target_file}' ke GitHub anda di folder utama."
+            return pd.DataFrame(), f"Gagal: File '{target_file}' tidak ditemukan di GitHub."
 
-    # --- TAHAP 2: EKSTRAKSI DATA DARIPADA HTML ---
+    # --- EKSTRAKSI DATA ---
     try:
         soup = BeautifulSoup(final_html, "html.parser")
         all_data = []
 
-        # Berdasarkan source web.txt, data ada dalam table dengan class 'table-sm'
+        # Ambil tabel harga
         tables = soup.find_all("table", class_="table-sm")
         
         for table in tables:
             rows = table.find_all("tr")
             for row in rows:
                 cols = row.find_all("td")
-                
-                # Struktur: [0] Produk/Berat, [1] Harga Jual, [2] Harga Buyback
                 if len(cols) >= 3:
-                    name_text = cols[0].get_text(strip=True).lower()
-                    sell_text = cols[1].get_text(strip=True)
-                    buyback_text = cols[2].get_text(strip=True)
+                    raw_name = cols[0].get_text(strip=True).lower()
+                    raw_sell = cols[1].get_text(strip=True)
+                    raw_buyback = cols[2].get_text(strip=True)
 
-                    # Kita cari baris yang ada unit 'gr'
-                    if "gr" in name_text:
+                    if "gr" in raw_name:
                         try:
-                            # 1. Kenal Pasti Vendor (Antam, UBS, atau Stargold)
+                            # Tentukan Vendor
                             vendor = "STARGOLD"
-                            if "antam" in name_text: vendor = "ANTAM"
-                            elif "ubs" in name_text: vendor = "UBS"
-                            elif "emaskita" in name_text: vendor = "EMASKITA"
+                            if "antam" in raw_name: vendor = "ANTAM"
+                            elif "ubs" in raw_name: vendor = "UBS"
 
-                            # 2. Bersihkan Berat: '0,5 gr' -> 0.5
-                            # Tukar koma kepada titik (format sistem)
-                            w_str = name_text.replace("gr", "").replace(",", ".").strip()
-                            # Ambil angka sahaja (biasanya di hujung selepas nama brand)
+                            # Bersihkan Berat (0,1 gr -> 0.1)
+                            w_str = raw_name.replace("gr", "").replace(",", ".").strip()
                             w_val = float(w_str.split()[-1])
 
-                            # 3. Bersihkan Harga: Ambil digit sahaja (buang Rp, titik, dsb)
-                            s_val = "".join(filter(str.isdigit, sell_text))
-                            b_val = "".join(filter(str.isdigit, buyback_text))
+                            # Bersihkan Harga
+                            s_val = "".join(filter(str.isdigit, raw_sell))
+                            b_val = "".join(filter(str.isdigit, raw_buyback))
 
                             if s_val:
                                 all_data.append({
@@ -76,13 +74,11 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
                                     "sell_idr": int(s_val),
                                     "buyback_idr": int(b_val) if b_val else 0
                                 })
-                        except:
-                            continue
+                        except: continue
 
         if not all_data:
-            return pd.DataFrame(), f"Data kosong. Sila semak kandungan fail {target_file}."
+            return pd.DataFrame(), f"Data kosong. Periksa isi {target_file}."
 
-        # Tukar ke DataFrame dan susun mengikut vendor & berat
         df = pd.DataFrame(all_data)
         df = df.drop_duplicates(subset=["vendor", "weight_g", "sell_idr"])
         df = df.sort_values(["vendor", "weight_g"]).reset_index(drop=True)
@@ -91,4 +87,4 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
         return df, f"StarGold ({source_label}) - {ts}"
 
     except Exception as e:
-        return pd.DataFrame(), f"Ralat Urai: {str(e)}"
+        return pd.DataFrame(), f"Gagal Urai: {str(e)}"
