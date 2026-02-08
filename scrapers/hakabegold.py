@@ -1,129 +1,97 @@
 import pandas as pd
 import requests
 import re
-from urllib.parse import urlparse, parse_qs
 from io import BytesIO
 from typing import Tuple
 
-# Link OneDrive Anda
-MY_SHORT_LINK = "https://1drv.ms/x/c/7181a7df3eab3581/IQAdDl52fuvfQqpHMQUXarpPAQjSrmRAdGBYh6zQE5QIlF8"
+# =========================================================
+# DATA TERBARU DARI LINK ANDA
+# =========================================================
+# Link: https://1drv.ms/x/c/7181a7df3eab3581/IQAdDl52fuvfQqpHMQUXarpPAQjSrmRAdGBYh6zQE5QIlF8
+# CID: 7181a7df3eab3581
+# AuthKey: IQAdDl52fuvfQqpHMQUXarpPAQjSrmRAdGBYh6zQE5QIlF8
+# =========================================================
 
-# Dummy
-URL_HAKABEGOLD = MY_SHORT_LINK
+CID = "7181a7df3eab3581"
+# Kita tebak Resid-nya (Biasanya CID + !106 untuk file utama)
+RESID = f"{CID.upper()}!106" 
+AUTHKEY = "IQAdDl52fuvfQqpHMQUXarpPAQjSrmRAdGBYh6zQE5QIlF8"
 
-def get_real_download_link(short_url):
-    """
-    Fungsi Detektif:
-    1. Mengikuti link pendek sampai ke alamat asli.
-    2. Mengekstrak 'resid' dan 'authkey' dari alamat asli.
-    3. Membangun link download yang bersih.
-    """
-    try:
-        session = requests.Session()
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        
-        # 1. Ikuti Redirect (PENTING: allow_redirects=True)
-        # Kita biarkan dia berjalan sampai mentok ke URL onedrive.live.com...
-        print("Resolving URL...")
-        response = session.get(short_url, headers=headers, timeout=30, allow_redirects=True)
-        final_url = response.url
-        print(f"URL Akhir: {final_url}")
-        
-        # 2. Parsing URL untuk mencari parameter kunci
-        parsed = urlparse(final_url)
-        params = parse_qs(parsed.query)
-        
-        # Kita cari resid dan authkey
-        resid = params.get('resid', [None])[0]
-        authkey = params.get('authkey', [None])[0]
-        
-        # JIKA GAGAL PARSING (Mungkin format URL beda), KITA PAKAI LOGIKA BRUTEFORCE
-        if not resid or not authkey:
-            # Coba cari resid dari path (kadang ada di path URL)
-            # Biasanya formatnya CID + ! + Nomor
-            cid_match = re.search(r'cid=([a-zA-Z0-9]+)', final_url)
-            if cid_match:
-                # Tebakan jitu: resid biasanya CID + "!106" atau "!105" untuk file Excel
-                cid = cid_match.group(1)
-                resid = f"{cid.upper()}!106" 
-            
-            # Cari authkey di string URL (biasanya diawali !)
-            if not authkey:
-                # Token authkey di link Anda tadi ada di belakang
-                # Kita coba ambil dari path short link jika perlu
-                # Tapi mari kita coba paksa download dari URL akhir dulu
-                return final_url.replace("redir", "download").replace("view", "download").replace("edit", "download")
-
-        # 3. Rakit Link Download Bersih
-        # Ini adalah format 'Legend' yang paling disukai Python
-        if resid and authkey:
-            clean_link = f"https://onedrive.live.com/download?resid={resid}&authkey={authkey}"
-            return clean_link
-            
-        # Fallback terakhir: Tambah ?download=1 di URL akhir
-        return final_url + "&download=1"
-
-    except Exception as e:
-        print(f"Error resolving: {e}")
-        return short_url
+# Link Download Paksa
+URL_HAKABEGOLD = f"https://onedrive.live.com/download?resid={RESID}&authkey={AUTHKEY}"
 
 def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
     try:
-        # LANGKAH 1: Dapatkan Link Download Asli
-        download_url = get_real_download_link(MY_SHORT_LINK)
-        print(f"Menggunakan Link Download: {download_url}")
-        
-        # LANGKAH 2: Download File
+        # 1. Download
         headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(download_url, headers=headers, timeout=60)
-        
+        response = requests.get(URL_HAKABEGOLD, headers=headers, timeout=60)
+
         if response.status_code != 200:
-            return pd.DataFrame(), f"Gagal Akses (Code: {response.status_code})"
-
-        # Cek Header (Anti HTML)
+            return pd.DataFrame(), f"Gagal Koneksi (Code: {response.status_code})"
+        
         if "text/html" in response.headers.get("Content-Type", "").lower():
-             return pd.DataFrame(), "Gagal. Masih diarahkan ke Web View (HTML). Coba perbarui Link Share."
+            return pd.DataFrame(), "Link mengarah ke HTML (Salah AuthKey/Resid)."
 
-        # LANGKAH 3: Baca Excel
+        # 2. Baca Excel
+        xls_data = BytesIO(response.content)
         try:
-            xls_data = BytesIO(response.content)
+            # Baca semua sheet
             xls = pd.read_excel(xls_data, sheet_name=None, header=None, engine='openpyxl')
-        except Exception:
-            return pd.DataFrame(), "Format file rusak/bukan Excel valid."
+        except:
+            return pd.DataFrame(), "File rusak/bukan Excel."
 
         final_df = pd.DataFrame()
         label = "HK Logam Mulia"
-        buyback_val = 0
+        
+        # Variabel untuk menampung data mentah (untuk debugging)
+        debug_info = []
 
-        # LANGKAH 4: Scanning Data
+        # 3. Scanning Data
         for sheet_name, df in xls.items():
+            # Simpan 5 baris pertama untuk laporan jika gagal
+            debug_info.append(f"Sheet: {sheet_name}\nSample Data:\n{df.head(5).to_string()}\n")
+
+            # Kita Longgarkan Pencarian: Cari kata "berat" ATAU "gram" saja
             for i, row in df.head(50).iterrows():
                 row_text = " ".join(row.astype(str).lower())
                 
-                if "berat" in row_text and "end user" in row_text:
+                # LOGIKA BARU: Cukup cari kata "berat" atau "item"
+                # Karena kadang "end user" ditulis beda
+                if ("berat" in row_text or "gram" in row_text) and ("jual" in row_text or "price" in row_text or "user" in row_text):
+                    
+                    # Set Header
                     df.columns = df.iloc[i].astype(str).str.lower().str.strip()
                     data = df.iloc[i+1:].copy()
                     
-                    c_berat = next((c for c in df.columns if "berat" in c), None)
-                    c_jual = next((c for c in df.columns if "end user" in c), None)
-                    c_stok = next((c for c in df.columns if "stock" in c or "stok" in c), None)
+                    # Mapping Kolom Lebih Pintar
+                    c_berat = next((c for c in df.columns if "berat" in c or "gram" in c or "weight" in c), None)
+                    # Cari kolom harga (bisa 'end user', 'harga', 'jual', 'price')
+                    c_jual = next((c for c in df.columns if "user" in c or "jual" in c or "harga" in c or "price" in c), None)
+                    c_stok = next((c for c in df.columns if "stok" in c or "stock" in c), None)
                     
                     if c_berat and c_jual:
+                        # Cleaning Data
                         data["weight_g"] = data[c_berat].apply(lambda x: _clean_number(x, is_float=True))
                         data["sell_idr"] = data[c_jual].apply(lambda x: _clean_number(x, is_float=False))
-                        if c_stok: data["stock"] = data[c_stok].fillna("Ready")
-                        else: data["stock"] = "Ready"
+                        
+                        if c_stok:
+                            data["stock"] = data[c_stok].fillna("Ready")
+                        else:
+                            data["stock"] = "Ready"
                         
                         valid = data[(data["weight_g"] > 0) & (data["sell_idr"] > 0)].copy()
                         
                         if not valid.empty:
+                            # Cari Buyback
                             full_text = " ".join(df.astype(str).values.flatten()).lower()
+                            
+                            # Coba cari tanggal
                             dt = re.search(r"(\d{1,2}\s+[a-z]{3,}\s+\d{4})", full_text)
                             if dt: label += f" — {dt.group(1).title()}"
-                            
+
+                            # Coba cari buyback
                             bb = re.search(r"buyback.*?(\d[\d\.,]+)", full_text)
+                            buyback_val = 0
                             if bb:
                                 buyback_val = _clean_number(bb.group(1))
                                 label += f" — Buyback: Rp{buyback_val:,}".replace(",", ".")
@@ -135,12 +103,16 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
             if not final_df.empty: break
 
         if final_df.empty:
-            return pd.DataFrame(), "Tabel harga tidak ditemukan."
+            # FITUR DIAGNOSTIK:
+            # Jika kosong, kembalikan Pesan Error berisi Data Mentah
+            # Supaya kita tahu harus ubah kata kunci apa
+            error_msg = "Tabel tidak dikenali. Ini sampel data Excel-nya:\n" + "\n".join(debug_info[:2])
+            return pd.DataFrame(), error_msg
 
         return final_df.sort_values("weight_g").reset_index(drop=True), label
 
     except Exception as e:
-        return pd.DataFrame(), f"Error System: {str(e)}"
+        return pd.DataFrame(), f"Error: {str(e)}"
 
 def _clean_number(val, is_float=False):
     if pd.isna(val) or val == "": return 0
