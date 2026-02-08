@@ -1,85 +1,94 @@
-import re
-from datetime import datetime
+import requests
 import pandas as pd
-from bs4 import BeautifulSoup
+import re
+import json
+from typing import Tuple
+
 
 URL_STARGOLD = "https://stargold.id/price/"
 
-WEIGHT_ORDER = [0.1, 0.25, 0.5, 1, 2, 3, 4, 5, 10, 25, 50, 100, 250, 500, 1000]
-WEIGHT_RANK = {w: i for i, w in enumerate(WEIGHT_ORDER)}
 
-def weight_sort_key(w: float):
-    if w in WEIGHT_RANK:
-        return (0, WEIGHT_RANK[w])
-    return (1, w)
+def parse_stargold(_: str = "") -> Tuple[pd.DataFrame, str]:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
 
-def normalize_spaces(s: str) -> str:
-    return re.sub(r"\s+", " ", str(s)).strip()
+    r = requests.get(URL_STARGOLD, headers=headers, timeout=30)
+    r.raise_for_status()
+    html = r.text
 
-def rupiah_to_int(s: str) -> int:
-    s = str(s).replace("Rp", "").replace(" ", "").strip()
-    s = s.replace(".", "").replace(",", "")
-    return int(s) if s.isdigit() else 0
+    # =====================================================
+    # 1. Cari JSON di window.__NUXT__
+    # =====================================================
+    m = re.search(r"window\.__NUXT__\s*=\s*(\{.*?\});", html, re.DOTALL)
+    if not m:
+        raise ValueError("StarGold: tidak menemukan data JSON (__NUXT__).")
 
-def parse_update_label(text: str) -> str:
-    m = re.search(r"Last\s*Update\s*:\s*([0-9]{2}/[0-9]{2}/[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})", text, re.IGNORECASE)
-    if m:
-        return f"Last Update: {m.group(1)}"
-    return f"Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    raw_json = m.group(1)
 
-def parse_stargold(html: str) -> tuple[pd.DataFrame, str]:
-    soup = BeautifulSoup(html, "html.parser")
-    text = normalize_spaces(soup.get_text(" ", strip=True))
-    update_label = parse_update_label(text)
+    try:
+        data = json.loads(raw_json)
+    except Exception as e:
+        raise ValueError(f"StarGold: gagal parse JSON (__NUXT__): {e}")
 
-    # Dynamic blocks: "<VENDOR> Last Update: .. Berat (gr) Harga Jual Buyback <body> ..."
-    block_pattern = re.compile(
-        r"(?P<vendor>[A-Z0-9 ]+?)\s+Last\s*Update\s*:\s*(?P<lu>\d{2}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2})\s+"
-        r"Berat\s*\(gr\)\s+Harga\s+Jual\s+Buyback\s+(?P<body>.+?)"
-        r"(?=(?:\s+[A-Z0-9 ]+?\s+Last\s*Update)|\Z)",
-        re.IGNORECASE,
-    )
-    blocks = list(block_pattern.finditer(text))
-    if not blocks:
-        raise RuntimeError("StarGold: tidak menemukan blok vendor (struktur berubah).")
+    # =====================================================
+    # 2. Navigasi struktur (robust)
+    # =====================================================
+    prices = None
 
-    pair_pattern = re.compile(
-        r"(?P<w>\d+(?:\.\d+)?)\s+Rp\s*(?P<sell>[\d\.\,]+)\s+Rp\s*(?P<buy>[\d\.\,]+)",
-        re.IGNORECASE,
-    )
+    def find_prices(obj):
+        nonlocal prices
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k in ("prices", "priceList", "products"):
+                    prices = v
+                    return
+                find_prices(v)
+        elif isinstance(obj, list):
+            for i in obj:
+                find_prices(i)
 
-    rows = []
-    vendor_order = []
-    for b in blocks:
-        vendor = normalize_spaces(b.group("vendor")).upper()
-        if vendor not in vendor_order:
-            vendor_order.append(vendor)
+    find_prices(data)
 
-        body = b.group("body")
-        for p in pair_pattern.finditer(body):
-            w = float(p.group("w"))
-            if not (0.1 <= w <= 1000):
-                continue
-            rows.append({
-                "snapshot_ts": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-                "update_label": update_label,
-                "source_site": "stargold",
-                "vendor": vendor,
-                "weight_g": w,
-                "sell_idr": rupiah_to_int("Rp" + p.group("sell")),
-                "buyback_idr": rupiah_to_int("Rp" + p.group("buy")),
-                "source_url": URL_STARGOLD,
+    if not prices or not isinstance(prices, list):
+        raise ValueError("StarGold: tidak menemukan blok harga (prices).")
+
+    # =====================================================
+    # 3. Mapping ke schema app
+    # =====================================================
+    records = []
+
+    for item in prices:
+        try:
+            weight = float(item.get("weight", 0))
+            sell = int(item.get("sell_price", 0))
+            buy = int(item.get("buyback_price", 0))
+        except Exception:
+            continue
+
+        if weight > 0 and sell > 0:
+            records.append({
+                "vendor": "StarGold",
+                "weight_g": weight,
+                "sell_idr": sell,
+                "buyback_idr": buy,
+                "stock": "Ready"
             })
 
-    if not rows:
-        raise RuntimeError("StarGold: tidak menemukan pasangan berat+harga.")
+    if not records:
+        raise ValueError("StarGold: data harga kosong setelah parsing JSON.")
 
-    df = pd.DataFrame(rows).drop_duplicates(subset=["update_label", "vendor", "weight_g", "sell_idr", "buyback_idr"])
+    df = (
+        pd.DataFrame(records)
+        .drop_duplicates(subset="weight_g")
+        .sort_values("weight_g")
+        .reset_index(drop=True)
+    )
 
-    vendor_rank = {v: i for i, v in enumerate(vendor_order)}
-    df["__vr"] = df["vendor"].map(lambda x: vendor_rank.get(x, 9999))
-    df["__w0"] = df["weight_g"].map(lambda x: weight_sort_key(float(x))[0])
-    df["__w1"] = df["weight_g"].map(lambda x: weight_sort_key(float(x))[1])
-    df = df.sort_values(["__vr", "vendor", "__w0", "__w1"]).drop(columns=["__vr", "__w0", "__w1"])
-
-    return df, update_label
+    return df, "StarGold"
