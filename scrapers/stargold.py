@@ -2,45 +2,20 @@ from __future__ import annotations
 from datetime import datetime
 import pandas as pd
 from bs4 import BeautifulSoup
-from curl_cffi import requests # Wajib: pip install curl_cffi
 
-URL_BASE = "https://stargold.id/"
-URL_STARGOLD = "https://stargold.id/price/"
+def parse_stargold(html: str) -> tuple[pd.DataFrame, str]:
+    """
+    Parser tangguh yang fokus membedah HTML dari htlm.txt.
+    Tidak melakukan fetch di sini agar tidak memicu Connection Reset.
+    """
+    if not html or len(html) < 100:
+        return pd.DataFrame(), "Pemicu: HTML kosong. Gunakan fitur tempel manual."
 
-def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
-    """
-    Teknik Stealth: Menggunakan Session untuk simulasi kunjungan bertahap
-    dan memaksa protokol HTTP/1.1 agar sidik jari TLS lebih stabil.
-    """
     try:
-        if not html:
-            # Gunakan Session untuk menyimpan cookies
-            with requests.Session() as s:
-                # 1. TAHAP PERTAMA: Kunjungi Home Page (Membangun Kepercayaan Server)
-                # Gunakan impersonate chrome110 untuk sidik jari browser
-                s.get(URL_BASE, impersonate="chrome110", timeout=20)
-                
-                # 2. TAHAP KEDUA: Kunjungi Halaman Harga
-                response = s.get(
-                    URL_STARGOLD,
-                    impersonate="chrome110",
-                    timeout=30,
-                    # Memaksa HTTP/1.1 karena seringkali HTTP/2 bot terdeteksi berbeda
-                    allow_redirects=True,
-                    headers={
-                        "Referer": URL_BASE,
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8",
-                        "Upgrade-Insecure-Requests": "1"
-                    }
-                )
-                response.raise_for_status()
-                html = response.text
-
         soup = BeautifulSoup(html, "html.parser")
         all_data = []
 
-        # Cari tabel (Sesuai file htlm.txt Anda)
+        # Mencari semua tabel harga (class table-sm di htlm.txt)
         tables = soup.find_all("table", class_="table-sm")
         
         for table in tables:
@@ -48,22 +23,31 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
             for row in rows:
                 cols = row.find_all("td")
                 if len(cols) >= 3:
-                    raw_weight = cols[0].get_text(strip=True).lower()
+                    raw_name = cols[0].get_text(strip=True).lower()
                     raw_sell = cols[1].get_text(strip=True)
                     raw_buyback = cols[2].get_text(strip=True)
 
-                    if "gr" in raw_weight:
+                    # Pastikan baris mengandung satuan berat 'gr'
+                    if "gr" in raw_name:
                         try:
-                            # Bersihkan Berat (Indo format: 0,1 gr)
-                            w_val = raw_weight.replace("gr", "").replace(",", ".").strip()
-                            # Ambil angka harga saja
+                            # 1. Bersihkan Nama/Vendor (Cek apakah Antam/UBS/Stargold)
+                            vendor = "STARGOLD"
+                            if "antam" in raw_name: vendor = "ANTAM"
+                            elif "ubs" in raw_name: vendor = "UBS"
+                            
+                            # 2. Parsing Berat (0,1 gr -> 0.1)
+                            weight_val = raw_name.replace("gr", "").replace(",", ".").strip()
+                            # Ambil angka paling akhir jika ada nama vendor di depan
+                            weight_val = weight_val.split()[-1] 
+
+                            # 3. Bersihkan Harga (Rp. 367.400 -> 367400)
                             s_val = "".join(filter(str.isdigit, raw_sell))
                             b_val = "".join(filter(str.isdigit, raw_buyback))
 
                             if s_val:
                                 all_data.append({
-                                    "vendor": "STARGOLD",
-                                    "weight_g": float(w_val),
+                                    "vendor": vendor,
+                                    "weight_g": float(weight_val),
                                     "sell_idr": int(s_val),
                                     "buyback_idr": int(b_val) if b_val else 0
                                 })
@@ -71,13 +55,13 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
                             continue
 
         if not all_data:
-            return pd.DataFrame(), "Server berhasil ditembus, tapi data tabel kosong."
+            return pd.DataFrame(), "Gagal ekstrak data. Pastikan Anda menyalin seluruh isi halaman (Ctrl+A -> Ctrl+C)."
 
         df = pd.DataFrame(all_data)
-        df = df.drop_duplicates(subset=["weight_g", "sell_idr"]).sort_values("weight_g").reset_index(drop=True)
+        df = df.sort_values(["vendor", "weight_g"]).reset_index(drop=True)
         
         ts = datetime.now().strftime("%d/%m/%y %H:%M:%S")
-        return df, f"StarGold (Stealth Mode) - {ts}"
+        return df, f"Berhasil diurai dari HTML - {ts}"
 
     except Exception as e:
-        return pd.DataFrame(), f"Blokir Firewall Terdeteksi: {str(e)}"
+        return pd.DataFrame(), f"Gagal urai HTML: {str(e)}"
