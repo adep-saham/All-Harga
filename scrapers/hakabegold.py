@@ -4,102 +4,89 @@ import re
 from io import BytesIO
 from typing import Tuple
 
-# URL Website Utama (Tempat kita mencari Link Excel terbaru)
-MAIN_WEBSITE = "https://www.logammuliahk.com/"
-
-def get_latest_onedrive_link() -> str:
-    """
-    Fungsi ini masuk ke website HK Logam Mulia, mencari iframe OneDrive,
-    dan mengambil Link Download terbaru secara otomatis.
-    """
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        # 1. Buka Website Utama
-        response = requests.get(MAIN_WEBSITE, headers=headers, timeout=30)
-        if response.status_code != 200: return ""
-        
-        # 2. Cari pola Link OneDrive di dalam HTML
-        # Pola: src="https://onedrive.live.com/embed?resid=..."
-        # Kita cari 'resid' dan 'authkey'
-        html_content = response.text
-        
-        # Regex untuk menangkap Resid dan Authkey
-        match = re.search(r'onedrive\.live\.com/embed\?resid=([A-Za-z0-9!]+)&authkey=([A-Za-z0-9!_\-]+)', html_content)
-        
-        if match:
-            resid = match.group(1)
-            authkey = match.group(2)
-            # 3. Rakit Link Download Resmi
-            # Ubah 'embed' menjadi 'download'
-            dynamic_url = f"https://onedrive.live.com/download?resid={resid}&authkey={authkey}"
-            return dynamic_url
-            
-    except Exception as e:
-        print(f"Gagal mencari link dinamis: {e}")
-        return ""
-    
-    return ""
-
-# Variabel dummy agar tidak error import di app.py (akan ditimpa oleh fungsi di atas)
-URL_HAKABEGOLD = "Dynamic Link (Auto-Detected)"
+# =========================================================
+# KONFIGURASI KONEKSI ONEDRIVE
+# =========================================================
+# Saya sudah mengekstrak link bersih dari parameter 'redeem' di link panjang Anda.
+# Link ini akan langsung memaksa download tanpa membuka preview web.
+URL_HAKABEGOLD = "https://1drv.ms/x/c/f82ea6cd27a31b67/UQRnG6MnzaYuIID4agAAAAAAJmymdJnSywKmuw?download=1"
 
 def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
     try:
-        # --- LANGKAH 1: Cari Link Terbaru ---
-        download_url = get_latest_onedrive_link()
+        # 1. Request file dengan sopan
+        headers = {
+            # User-Agent browser modern agar tidak dianggap bot
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+        }
         
-        if not download_url:
-            return pd.DataFrame(), "HK Logam Mulia — Gagal menemukan Link Excel di website utama."
-
-        # --- LANGKAH 2: Download Excel ---
-        headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(download_url, headers=headers, timeout=60) # Timeout diperlama
+        # Timeout 60 detik karena redirect 1drv.ms kadang butuh waktu
+        response = requests.get(URL_HAKABEGOLD, headers=headers, timeout=60, allow_redirects=True)
         
+        # Cek Status Code
         if response.status_code != 200:
-            return pd.DataFrame(), f"HK Logam Mulia — Gagal Download (Code: {response.status_code})"
+            return pd.DataFrame(), f"HK Logam Mulia — Gagal Akses (Code: {response.status_code})"
 
-        # Cek apakah isinya HTML (berarti gagal)
-        if "text/html" in response.headers.get("Content-Type", "").lower():
-             return pd.DataFrame(), "HK Logam Mulia — Link mengarah ke Web, bukan Excel."
+        # Cek apakah isinya HTML (berarti gagal/masuk halaman login)
+        content_type = response.headers.get('Content-Type', '').lower()
+        if 'text/html' in content_type:
+             # Coba cek apakah ada indikasi file dipindah
+             return pd.DataFrame(), "HK Logam Mulia — Link mengarah ke Web View, bukan File Excel. Token mungkin expired."
 
-        # --- LANGKAH 3: Proses Excel ---
+        # 2. Baca Excel
         try:
             xls_data = BytesIO(response.content)
+            # Baca semua sheet karena data bisa pindah-pindah sheet
             xls = pd.read_excel(xls_data, sheet_name=None, header=None, engine='openpyxl')
         except Exception:
-            return pd.DataFrame(), "HK Logam Mulia — File rusak/Bukan Excel Valid"
+            return pd.DataFrame(), "HK Logam Mulia — File rusak atau format bukan Excel"
 
         final_df = pd.DataFrame()
         label = "HK Logam Mulia"
         buyback_val = 0
 
-        # --- LANGKAH 4: Scanning Data (Logic Lama yang sudah stabil) ---
+        # 3. Scanning Data (Logic Pencarian Tabel)
+        # Kita scan setiap sheet untuk mencari kata kunci "berat" dan "end user"
         for sheet_name, df in xls.items():
-            for i, row in df.head(50).iterrows(): # Scan 50 baris
+            # Scan 50 baris pertama di setiap sheet
+            for i, row in df.head(50).iterrows():
                 row_text = " ".join(row.astype(str).lower())
                 
+                # KATA KUNCI UTAMA
                 if "berat" in row_text and "end user" in row_text:
+                    
+                    # Set Header
                     df.columns = df.iloc[i].astype(str).str.lower().str.strip()
                     data = df.iloc[i+1:].copy()
                     
+                    # Cari Kolom
                     c_berat = next((c for c in df.columns if "berat" in c), None)
                     c_jual = next((c for c in df.columns if "end user" in c), None)
                     c_stok = next((c for c in df.columns if "stock" in c or "stok" in c), None)
                     
                     if c_berat and c_jual:
+                        # Cleaning Data
                         data["weight_g"] = data[c_berat].apply(lambda x: _clean_number(x, is_float=True))
                         data["sell_idr"] = data[c_jual].apply(lambda x: _clean_number(x, is_float=False))
-                        data["stock"] = data[c_stok].fillna("Ready") if c_stok else "Ready"
                         
+                        if c_stok:
+                            data["stock"] = data[c_stok].fillna("Ready")
+                        else:
+                            data["stock"] = "Ready"
+                        
+                        # Filter Data Valid
                         valid = data[(data["weight_g"] > 0) & (data["sell_idr"] > 0)].copy()
                         
                         if not valid.empty:
-                            # Ambil Tanggal & Buyback
+                            # --- Cari Info Tambahan (Tanggal & Buyback) ---
                             full_text = " ".join(df.astype(str).values.flatten()).lower()
                             
+                            # Cari Tanggal
                             dt = re.search(r"(\d{1,2}\s+[a-z]{3,}\s+\d{4})", full_text)
                             if dt: label += f" — {dt.group(1).title()}"
                             
+                            # Cari Buyback
                             bb = re.search(r"buyback.*?(\d[\d\.,]+)", full_text)
                             if bb:
                                 buyback_val = _clean_number(bb.group(1))
@@ -112,7 +99,7 @@ def parse_hakabegold(dummy_html="") -> Tuple[pd.DataFrame, str]:
             if not final_df.empty: break
 
         if final_df.empty:
-            return pd.DataFrame(), "HK Logam Mulia — Struktur tabel Excel berubah."
+            return pd.DataFrame(), "HK Logam Mulia — Struktur tabel Excel berubah/tidak ditemukan."
 
         return final_df.sort_values("weight_g").reset_index(drop=True), label
 
