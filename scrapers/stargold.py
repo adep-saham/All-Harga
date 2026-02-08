@@ -3,95 +3,95 @@ import os
 import pandas as pd
 from datetime import datetime
 from bs4 import BeautifulSoup
-from curl_cffi import requests
 
+# URL referensi (tetap sesuai app.py)
 URL_STARGOLD = "https://stargold.id/price/"
 
 def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
     """
-    Jalur Anti-Blokir:
-    1. Mencoba akses Live dengan sidik jari Chrome.
-    2. Jika gagal, mencari file 'source web.txt' atau 'htlm.txt' di semua folder.
+    Parser cerdas untuk Stargold.
+    1. Mencoba menggunakan html yang dikirim app.py.
+    2. Jika kosong, mencari file 'source web.txt' atau 'htlm.txt' di berbagai lokasi.
+    3. Mengekstrak data harga Antam, UBS, dan Stargold dari HTML tersebut.
     """
     final_html = html
-    source_label = "Live Web"
+    source_label = "Live/Provided"
 
-    # --- JALUR 1: USAHA PENEMBUSAN LIVE ---
-    if not final_html or len(final_html) < 100:
-        try:
-            # Menggunakan sidik jari Chrome 120
-            response = requests.get(
-                URL_STARGOLD,
-                impersonate="chrome",
-                timeout=15,
-                headers={
-                    "referer": "https://www.google.com/",
-                    "accept-language": "id-ID,id;q=0.9,en-US;q=0.8",
-                }
-            )
-            response.raise_for_status()
-            final_html = response.text
-        except Exception:
-            # --- JALUR 2: RADAR FILE (Mencari source web.txt atau htlm.txt) ---
-            current_script_dir = os.path.dirname(os.path.abspath(__file__))
-            root_dir = os.path.dirname(current_script_dir)
-            
-            # Daftar file yang mungkin Anda unggah
-            possible_filenames = ["source web.txt", "htlm.txt"]
-            # Daftar lokasi yang mungkin (Folder utama, folder scrapers, atau folder kerja)
-            possible_dirs = [root_dir, current_script_dir, os.getcwd()]
-            
-            found_path = None
-            for d in possible_dirs:
-                for f_name in possible_filenames:
-                    p = os.path.join(d, f_name)
-                    if os.path.exists(p):
-                        found_path = p
+    # --- TAHAP 1: RADAR PENCARIAN FILE ---
+    if not final_html or len(final_html) < 500:
+        # Daftar nama file yang mungkin Anda gunakan
+        target_files = ["source web.txt", "htlm.txt"]
+        
+        # Daftar lokasi pencarian (Folder utama, folder scrapers, folder saat ini)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        root_dir = os.path.dirname(current_dir)
+        search_paths = [root_dir, current_dir, os.getcwd()]
+        
+        found_content = ""
+        found_file_name = ""
+        
+        for directory in search_paths:
+            for filename in target_files:
+                path = os.path.join(directory, filename)
+                if os.path.exists(path):
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            found_content = f.read()
+                            found_file_name = filename
                         break
-                if found_path: break
-            
-            if found_path:
-                with open(found_path, "r", encoding="utf-8") as f:
-                    final_html = f.read()
-                source_label = f"Offline ({os.path.basename(found_path)})"
-            else:
+                    except:
+                        continue
+            if found_content: break
+        
+        if found_content:
+            final_html = found_content
+            source_label = f"Offline ({found_file_name})"
+        else:
+            # Jika tetap gagal, coba fetch (kemungkinan besar gagal karena firewall)
+            try:
+                import requests
+                headers = {"User-Agent": "Mozilla/5.0"}
+                resp = requests.get(URL_STARGOLD, timeout=10, headers=headers)
+                final_html = resp.text
+                source_label = "Live Web"
+            except:
                 return pd.DataFrame(), "Semua jalur buntu: Koneksi ditolak & file TXT tidak ditemukan di root folder."
 
-    # --- JALUR 3: EKSTRAKSI DATA (PARSER) ---
+    # --- TAHAP 2: EKSTRAKSI DATA (PARSING) ---
     try:
         soup = BeautifulSoup(final_html, "html.parser")
         all_data = []
 
-        # Target: Tabel dengan class table-sm (Sesuai source web.txt Anda)
-        tables = soup.find_all("table", class_="table-sm")
+        # Cari semua tabel di dalam HTML
+        tables = soup.find_all("table")
         
         for table in tables:
             rows = table.find_all("tr")
             for row in rows:
                 cols = row.find_all("td")
+                # Berdasarkan file Anda: td[0]=Produk, td[1]=Jual, td[2]=Buyback
                 if len(cols) >= 3:
-                    # Ambil teks mentah
-                    raw_name = cols[0].get_text(strip=True).lower()
-                    raw_sell = cols[1].get_text(strip=True)
-                    raw_buyback = cols[2].get_text(strip=True)
+                    name_text = cols[0].get_text(strip=True).lower()
+                    sell_text = cols[1].get_text(strip=True)
+                    buyback_text = cols[2].get_text(strip=True)
 
-                    # Filter: Hanya baris yang ada tulisan 'gr'
-                    if "gr" in raw_name:
+                    # Filter baris yang mengandung satuan berat 'gr'
+                    if "gr" in name_text:
                         try:
-                            # Tentukan Vendor
+                            # 1. Tentukan Vendor
                             vendor = "STARGOLD"
-                            if "antam" in raw_name: vendor = "ANTAM"
-                            elif "ubs" in raw_name: vendor = "UBS"
-                            elif "emaskita" in raw_name: vendor = "EMASKITA"
+                            if "antam" in name_text: vendor = "ANTAM"
+                            elif "ubs" in name_text: vendor = "UBS"
+                            elif "emaskita" in name_text: vendor = "EMASKITA"
 
-                            # Bersihkan Berat (Indo: 0,1 gr -> 0.1)
-                            w_str = raw_name.replace("gr", "").replace(",", ".").strip()
-                            # Ambil angka desimal terakhir dari string
+                            # 2. Bersihkan Berat (Handle 0,1 gr atau 0.1 gr)
+                            w_str = name_text.replace("gr", "").replace(",", ".").strip()
+                            # Ambil angka saja (biasanya di bagian akhir string produk)
                             w_val = float(w_str.split()[-1])
 
-                            # Bersihkan Harga (Hanya ambil angka)
-                            s_val = "".join(filter(str.isdigit, raw_sell))
-                            b_val = "".join(filter(str.isdigit, raw_buyback))
+                            # 3. Bersihkan Harga (Hanya ambil angka)
+                            s_val = "".join(filter(str.isdigit, sell_text))
+                            b_val = "".join(filter(str.isdigit, buyback_text))
 
                             if s_val:
                                 all_data.append({
@@ -104,8 +104,9 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
                             continue
 
         if not all_data:
-            return pd.DataFrame(), f"Data kosong di {source_label}. Periksa format HTML."
+            return pd.DataFrame(), f"Data kosong di {source_label}. Cek apakah isi file benar."
 
+        # Finalisasi DataFrame sesuai kebutuhan app.py
         df = pd.DataFrame(all_data)
         df = df.drop_duplicates(subset=["vendor", "weight_g", "sell_idr"])
         df = df.sort_values(["vendor", "weight_g"]).reset_index(drop=True)
