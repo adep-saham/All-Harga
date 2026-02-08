@@ -14,12 +14,11 @@ from scrapers.indogold import parse_indogold, URL_INDOGOLD
 from scrapers.hakabegold import parse_hakabegold, URL_HAKABEGOLD
 from scrapers.agungjewellery import parse_agungjewellery
 
-# Pastikan folder utils dan file ini sudah Anda buat sebelumnya
+# Proteksi import utils
 try:
     from utils.uploader import render_uploader_sidebar
     from utils.history_manager import get_full_history
 except ImportError:
-    # Fallback jika folder utils belum dibuat agar app tidak crash
     def render_uploader_sidebar(): pass
     def get_full_history(): return pd.DataFrame()
 
@@ -55,13 +54,16 @@ def fetch_html(url: str) -> str:
     except Exception:
         return ""
 
-def get_all_antam_100g():
-    """Mengumpulkan data Antam 100g dari semua sumber."""
+def get_all_comparison_100g():
+    """
+    Mengumpulkan data 100g dari semua sumber.
+    Filter 'Antam' hanya untuk toko yang multi-brand.
+    """
     results = []
-    # Daftar fungsi scraper
+    # Daftar urutan sesuai permintaan di gambar
     scrapers = [
-        ("Galeri 24", lambda: parse_galeri24(fetch_html(URL_GALERI24))),
         ("StarGold", lambda: parse_stargold("")),
+        ("Galeri 24", lambda: parse_galeri24(fetch_html(URL_GALERI24))),
         ("Aneka Logam", lambda: parse_anekalogam(fetch_html(URL_ANEKALOGAM))),
         ("HRTA", lambda: parse_hrta("")),
         ("IndoGold", lambda: parse_indogold(fetch_html(URL_INDOGOLD))),
@@ -73,19 +75,28 @@ def get_all_antam_100g():
         try:
             df_tmp, _ = func()
             if df_tmp is not None and not df_tmp.empty:
-                # Filter: Hanya Antam dan berat 100
-                mask = (df_tmp['vendor'].str.contains('ANTAM', case=False, na=False)) & \
-                       (df_tmp['weight_g'] == 100)
+                # LOGIKA FILTER DINAMIS:
+                if source_name in ["Galeri 24", "StarGold", "IndoGold"]:
+                    # Toko ini punya banyak brand, kita ambil yang ada kata 'ANTAM'
+                    mask = (df_tmp['vendor'].str.contains('ANTAM', case=False, na=False)) & \
+                           (df_tmp['weight_g'] == 100)
+                else:
+                    # Toko lain (HRTA, Hakabe, Aneka, Agung), ambil produk 100g utama mereka
+                    mask = (df_tmp['weight_g'] == 100)
+                
                 filtered = df_tmp[mask].copy()
                 if not filtered.empty:
-                    row = filtered.iloc[0]
+                    # Ambil baris pertama (harga terendah/utama)
+                    row = filtered.sort_values("sell_idr").iloc[0]
                     results.append({
                         "Nama Toko Emas": source_name,
                         "Harga Jual": row['sell_idr'],
                         "Harga Beli": row['buyback_idr']
                     })
         except Exception:
+            # Jika satu vendor error, lewati saja agar vendor lain tetap muncul
             continue
+            
     return pd.DataFrame(results)
 
 # =========================================================
@@ -96,7 +107,7 @@ st.sidebar.title("⚙️ Kontrol")
 source = st.sidebar.radio(
     "Sumber Data",
     [
-        "📊 Perbandingan Antam 100g",
+        "📊 Perbandingan 100g (All)",
         "Galeri24",
         "StarGold",
         "AnekaLogam",
@@ -118,17 +129,17 @@ st.title("📊 Monitoring Harga Emas")
 
 if st.button("🚀 Ambil Data Sekarang", use_container_width=True, type="primary"):
     try:
-        if source == "📊 Perbandingan Antam 100g":
-            with st.spinner("Menyelaraskan harga Antam 100g dari seluruh toko..."):
-                df_comp = get_all_antam_100g()
+        if source == "📊 Perbandingan 100g (All)":
+            with st.spinner("Menyelaraskan harga 100g dari seluruh toko..."):
+                df_comp = get_all_comparison_100g()
                 if not df_comp.empty:
-                    # Urutkan harga termurah
+                    # Urutkan berdasarkan harga jual termurah
                     df_comp = df_comp.sort_values("Harga Jual", ascending=True).reset_index(drop=True)
-                    df_comp.index += 1
+                    df_comp.index += 1 # Penomoran mulai dari 1
                     
-                    st.subheader("🏆 Tabel Perbandingan Antam 100 gr")
+                    st.subheader("🏆 Tabel Perbandingan Emas 100 gr")
                     
-                    # Format tabel sesuai permintaan Anda
+                    # Tampilan Tabel Final
                     display_table = pd.DataFrame({
                         "No": df_comp.index,
                         "Nama Toko Emas": df_comp["Nama Toko Emas"],
@@ -137,19 +148,18 @@ if st.button("🚀 Ambil Data Sekarang", use_container_width=True, type="primary
                     })
                     st.table(display_table)
                     
-                    # Info harga terbaik
+                    # Highlight harga terbaik
                     best = df_comp.iloc[0]
-                    st.success(f"Harga Termurah: **{format_rp(best['Harga Jual'])}** di **{best['Nama Toko Emas']}**")
+                    st.success(f"Harga Termurah saat ini: **{format_rp(best['Harga Jual'])}** di **{best['Nama Toko Emas']}**")
                 else:
-                    st.warning("Data Antam 100g tidak ditemukan di semua sumber.")
+                    st.warning("Data 100g tidak ditemukan di semua sumber.")
 
         else:
             # === LOGIKA DETAIL VENDOR (LAMA) ===
-            with st.spinner(f"Mengambil data {source}..."):
+            with st.spinner(f"Mengambil data lengkap {source}..."):
                 df = pd.DataFrame()
                 update_label = ""
                 
-                # Pemetaan URL (sesuai app.py lama Anda)
                 URLS = {
                     "Galeri24": URL_GALERI24,
                     "StarGold": URL_STARGOLD,
@@ -188,7 +198,7 @@ if st.button("🚀 Ambil Data Sekarang", use_container_width=True, type="primary
                     })
                     st.table(display)
             else:
-                st.warning("Data kosong.")
+                st.warning("Data kosong atau gagal diambil.")
 
     except Exception as e:
         st.error(f"Terjadi kesalahan fatal: {e}")
