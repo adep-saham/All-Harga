@@ -19,12 +19,27 @@ from scrapers.agungjewellery import parse_agungjewellery
 from utils.uploader import render_uploader_sidebar
 from utils.history_manager import get_full_history, save_to_history
 
+# AUTH (username-only, role/permission)
+from utils.auth import (
+    require_login,
+    render_user_badge,
+    can_export_excel,
+    can_upload_source,
+    can_save_to_gsheets,
+)
+
 # =========================================================
-# CONFIG & HELPERS
+# CONFIG & AUTH GATE
 # =========================================================
 st.set_page_config(page_title="Monitor Harga Emas", layout="wide")
 
+require_login()
+render_user_badge(where="sidebar")
 
+
+# =========================================================
+# HELPERS
+# =========================================================
 def format_rp(x):
     try:
         return f"Rp{int(x):,}".replace(",", ".")
@@ -87,7 +102,7 @@ def get_all_comparison_100g():
 
 
 # =========================================================
-# EXPORT EXCEL (ALL SHEETS)
+# EXPORT EXCEL (ALL SHEETS) - from Google Sheets history
 # =========================================================
 ALL_SHEETS = [
     "Summary_100g",
@@ -106,22 +121,18 @@ def build_excel_all_sheets() -> bytes:
     output = BytesIO()
     now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # butuh openpyxl di requirements.txt
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        info = pd.DataFrame(
-            {
-                "generated_at": [now],
-                "sheets": [", ".join(ALL_SHEETS)],
-            }
-        )
+        info = pd.DataFrame({"generated_at": [now], "sheets": [", ".join(ALL_SHEETS)]})
         info.to_excel(writer, sheet_name="_INFO", index=False)
 
         for sheet in ALL_SHEETS:
             df = get_full_history(worksheet_name=sheet)
 
             if df is None or df.empty:
-                pd.DataFrame(
-                    columns=["timestamp", "vendor", "weight_g", "sell_idr", "buyback_idr", "source_update"]
-                ).to_excel(writer, sheet_name=sheet[:31], index=False)
+                pd.DataFrame(columns=["timestamp", "vendor", "weight_g", "sell_idr", "buyback_idr", "source_update"]).to_excel(
+                    writer, sheet_name=sheet[:31], index=False
+                )
                 continue
 
             if "timestamp" in df.columns:
@@ -177,25 +188,33 @@ else:
     target_sheet = "Summary_100g"
 
 st.sidebar.divider()
-render_uploader_sidebar()
 
-# Export Excel All
+# Upload Source Web: admin only
+if can_upload_source():
+    render_uploader_sidebar()
+else:
+    st.sidebar.info("Upload Source Web hanya untuk admin.")
+
+# Export Excel All (sales + admin)
 st.sidebar.divider()
 st.sidebar.subheader("⬇️ Export Database")
 
-# 2-step: siapkan bytes saat klik, lalu download muncul (lebih stabil di Streamlit)
-if st.sidebar.button("📥 Siapkan Excel (All Sheets)", use_container_width=True):
-    st.session_state["excel_bytes"] = build_excel_all_sheets()
+if can_export_excel():
+    # 2-step: siapkan bytes saat klik, lalu download muncul (lebih stabil di Streamlit)
+    if st.sidebar.button("📥 Siapkan Excel (All Sheets)", use_container_width=True):
+        st.session_state["excel_bytes"] = build_excel_all_sheets()
 
-excel_bytes = st.session_state.get("excel_bytes")
-if excel_bytes:
+    excel_bytes = st.session_state.get("excel_bytes")
     st.sidebar.download_button(
         label="✅ Download Excel (All Sheets)",
-        data=excel_bytes,
+        data=excel_bytes if excel_bytes else b"",
         file_name="Database_Harga_Emas_ALL.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        disabled=not bool(excel_bytes),
         use_container_width=True,
     )
+else:
+    st.sidebar.info("Export Excel hanya untuk user: sales & admin.")
 
 
 # =========================================================
@@ -218,7 +237,12 @@ def do_fetch_current():
 
     if current_source == "HK Logam Mulia":
         df_detail, ul = parse_hakabegold()
-        if df_detail is not None and not df_detail.empty and ("vendor" in df_detail.columns) and df_detail["vendor"].isna().all():
+        if (
+            df_detail is not None
+            and not df_detail.empty
+            and ("vendor" in df_detail.columns)
+            and df_detail["vendor"].isna().all()
+        ):
             df_detail["vendor"] = "HK Logam Mulia"
 
     elif current_source == "StarGold":
@@ -265,9 +289,13 @@ with tab1:
     df_active = st.session_state.get("current_df", pd.DataFrame())
 
     if df_active is not None and not df_active.empty:
-        if st.button(f"💾 Simpan ke Google Sheet: {target_sheet}", use_container_width=True):
-            if save_to_history(df_active, worksheet_name=target_sheet):
-                st.success(f"✅ Data berhasil dicatat di tab '{target_sheet}'")
+        # Save to GS: admin only
+        if can_save_to_gsheets():
+            if st.button(f"💾 Simpan ke Google Sheet: {target_sheet}", use_container_width=True):
+                if save_to_history(df_active, worksheet_name=target_sheet):
+                    st.success(f"✅ Data berhasil dicatat di tab '{target_sheet}'")
+        else:
+            st.info("Akses simpan ke Google Sheet hanya untuk admin (adep).")
 
         if st.session_state.get("mode") == "📊 Perbandingan 100g (All)":
             st.subheader("📋 Tabel Perbandingan Antam 100 gr")
