@@ -1,8 +1,9 @@
 import streamlit as st
 import requests
 import pandas as pd
+import plotly.express as px  # <--- FIX: Ini yang tadi hilang sehingga menyebabkan NameError
 from datetime import datetime
-import time # <--- Tetap ada untuk mencegah error progress bar
+import time 
 
 # =========================================================
 # IMPORT SCRAPERS & UTILS
@@ -81,13 +82,11 @@ else: source_opt = "All 100g"
 btn_fetch = st.sidebar.button("🚀 Lihat Data Terbaru", width='stretch')
 
 st.sidebar.divider()
-# Memindahkan fitur simpan ke Google Sheets sebagai pengganti Drive
+
 if st.sidebar.button("💾 Simpan Semua ke Google Sheets", type="primary", width='stretch'):
     with st.spinner("Menyimpan ke histori..."):
-        # Ambil data perbandingan 100g
         df_to_save = get_all_comparison_100g()
         if not df_to_save.empty:
-            # Simpan ke worksheet 'Summary_100g' di Google Sheets Anda
             if save_to_history(df_to_save, worksheet_name="Summary_100g"):
                 st.sidebar.success("✅ Histori 100g Tersimpan!")
             else:
@@ -156,4 +155,5 @@ with tab2:
         w_plot = c2.selectbox("Berat", sorted(df_hist['weight_g'].unique()))
         plot_df = df_hist[(df_hist['vendor'] == v_plot) & (df_hist['weight_g'] == w_plot)]
         if not plot_df.empty:
+            # px sekarang sudah di-import di atas
             st.plotly_chart(px.line(plot_df, x="timestamp", y="sell_idr", markers=True, title=f"Tren Harga {v_plot}"), width='stretch')
