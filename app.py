@@ -4,7 +4,7 @@ import pandas as pd
 from io import BytesIO
 import plotly.express as px
 from datetime import datetime
-import time  # <--- PERBAIKAN: Wajib ada agar tidak error
+import time  # <--- PERBAIKAN: Ditambahkan agar tidak error NameError
 
 # =========================================================
 # LIBRARY GOOGLE DRIVE
@@ -72,7 +72,7 @@ def get_all_comparison_100g():
         try:
             df_tmp, update_label = func() 
             if df_tmp is not None and not df_tmp.empty:
-                # FILTER AMAN: Tetap menjaga StarGold 100gr agar muncul
+                # Memastikan StarGold 100gr tetap terbaca (Antam atau StarGold brand)
                 if name == "StarGold":
                     mask = (df_tmp['vendor'].str.contains('ANTAM|STARGOLD', case=False)) & (df_tmp['weight_g'] == 100)
                 elif name in ["Galeri 24", "IndoGold"]:
@@ -123,11 +123,14 @@ def fetch_all_vendors_full():
 
 def create_excel_bytes(df):
     output = BytesIO()
-    # Menggunakan engine xlsxwriter yang tadinya menyebabkan error
+    # Menggunakan engine xlsxwriter untuk membuat file Excel
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df_100 = df[df['weight_g'] == 100].copy()
-        if not df_100.empty: df_100.to_excel(writer, index=False, sheet_name='Summary_100g')
+        if not df_100.empty: 
+            df_100.to_excel(writer, index=False, sheet_name='Summary_100g')
+        
         for vendor in df['vendor'].unique():
+            # Aturan Excel: Nama sheet tidak boleh > 31 karakter
             clean_name = str(vendor).replace(" ", "_").replace("/", "")[:30]
             df[df['vendor'] == vendor].to_excel(writer, index=False, sheet_name=clean_name)
     output.seek(0)
@@ -149,9 +152,10 @@ st.sidebar.subheader("☁️ Simpan ke Drive")
 folder_id_input = st.sidebar.text_input("ID Folder Google Drive", value="1zJsAPL-2Ry8e3W6B3641Fjub-v4AKD33")
 
 if st.sidebar.button("⚡ Generate & Upload ke Drive", type="primary", width='stretch'):
-    if not folder_id_input: st.sidebar.error("⚠️ Masukkan ID Folder Drive!")
+    if not folder_id_input: 
+        st.sidebar.error("⚠️ Masukkan ID Folder Drive!")
     else:
-        with st.spinner("Sedang memproses..."):
+        with st.spinner("Sedang memproses scraping dan upload..."):
             df_full = fetch_all_vendors_full()
             if not df_full.empty:
                 excel_io = create_excel_bytes(df_full)
@@ -159,10 +163,13 @@ if st.sidebar.button("⚡ Generate & Upload ke Drive", type="primary", width='st
                 file_name = f"Rekap_Emas_{timestamp_str}.xlsx"
                 link = upload_to_drive(excel_io, file_name, folder_id_input)
                 if link:
-                    st.sidebar.success("✅ Terupload!")
+                    st.sidebar.success("✅ Berhasil Upload!")
                     st.sidebar.markdown(f"[📂 Buka Drive]({link})")
                     st.session_state['current_df'] = df_full
-            else: st.error("Data tidak ditemukan.")
+                else:
+                    st.error("Gagal Upload. Cek log atau izin folder.")
+            else: 
+                st.error("Data tidak ditemukan saat proses scraping.")
 
 st.sidebar.divider()
 render_uploader_sidebar()
@@ -190,7 +197,8 @@ with tab1:
                 if source_opt == "Galeri24": df_detail, ul = parse_galeri24(html)
                 elif source_opt == "AnekaLogam": df_detail, ul = parse_anekalogam(html)
                 elif source_opt == "IndoGold": df_detail, ul = parse_indogold(html)
-            if not df_detail.empty: df_detail['source_update'] = ul
+            if not df_detail.empty: 
+                df_detail['source_update'] = ul
             st.session_state['current_df'] = df_detail
 
     if 'current_df' in st.session_state and not st.session_state['current_df'].empty:
@@ -217,5 +225,13 @@ with tab1:
                 }))
 
 with tab2:
-    # (Logika grafik tetap sama)
-    pass
+    st.subheader("📈 Grafik Histori")
+    sheet_to_view = st.selectbox("Pilih Sumber Data Grafik", ["Summary_100g", "Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold", "HK_Logam_Mulia", "Agung_Jewellery"])
+    df_hist = get_full_history(worksheet_name=sheet_to_view)
+    if not df_hist.empty:
+        c1, c2 = st.columns(2)
+        v_plot = c1.selectbox("Pilih Vendor", df_hist['vendor'].unique())
+        w_plot = c2.selectbox("Pilih Berat", sorted(df_hist['weight_g'].unique()), key="w_plot")
+        plot_df = df_hist[(df_hist['vendor'] == v_plot) & (df_hist['weight_g'] == w_plot)]
+        if not plot_df.empty:
+            st.plotly_chart(px.line(plot_df, x="timestamp", y="sell_idr", markers=True, title=f"Tren {v_plot} {w_plot}g"), width='stretch')
