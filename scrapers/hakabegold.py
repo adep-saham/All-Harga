@@ -6,7 +6,8 @@ from typing import Tuple
 # =====================================================
 # SOURCE
 # =====================================================
-BASE_URL = (
+# Pastikan nama variabel ini sesuai dengan yang di-import di app.py
+URL_HAKABEGOLD = (
     "https://docs.google.com/spreadsheets/d/e/"
     "2PACX-1vRNGDnYTm5AU122rdZqSxNyn4seEQ9S0wVSdMTzo9QD6MDCITnasamftQLY0tLQ5A"
     "/pub?gid=2039839912&single=true&output=csv"
@@ -32,8 +33,8 @@ def parse_hakabegold() -> Tuple[pd.DataFrame, str]:
     Menarik data dari Google Sheets dan mengambil harga beli (buyback) 
     langsung dari kolom di sheet.
     """
-    # Menambahkan cache buster untuk data terbaru
-    current_url = f"{BASE_URL}&cb={int(time.time())}"
+    # Menambahkan cache buster (&cb=...) agar Google memberikan data terbaru
+    current_url = f"{URL_HAKABEGOLD}&cb={int(time.time())}"
     
     try:
         # 1. Baca CSV dari URL
@@ -48,12 +49,12 @@ def parse_hakabegold() -> Tuple[pd.DataFrame, str]:
         # 3. Mapping data langsung dari kolom Sheet:
         # Col 0 = Berat (weight_g)
         # Col 1 = Harga Jual (sell_idr)
-        # Col 2 = Harga Beli/Buyback (buyback_idr) -> DIAMBIL LANGSUNG
+        # Col 2 = Harga Beli/Buyback (buyback_idr)
         df = pd.DataFrame({
             "vendor": "HK Logam Mulia",
             "weight_g": data[0].astype(float),
             "sell_idr": data[1].apply(_clean_rp),
-            "buyback_idr": data[2].apply(_clean_rp), # Mengambil dari kolom ke-3 di Sheet
+            "buyback_idr": data[2].apply(_clean_rp), # Ambil harga beli dari kolom C
             "stock": "Ready"
         })
 
