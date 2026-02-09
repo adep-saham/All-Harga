@@ -22,23 +22,29 @@ def rupiah_to_int(s: str) -> int:
     return int(s) if s.isdigit() else 0
 
 def parse_update_label(text: str) -> str:
-    # Halaman menampilkan teks: "** Harga berlaku untuk ... tahun 2025" dll
-    # Kita ambil yang paling stabil: tanggal snapshot + (kalau ada) tahun produksi
-    m = re.search(r"Harga berlaku.*?tahun\s+(\d{4})", text, re.IGNORECASE)
-    if m:
-        return f"Harga berlaku untuk produksi tahun {m.group(1)}"
+    """
+    Mengekstrak informasi tanggal pembaruan harga langsung dari teks halaman.
+    """
+    # 1. Mencari pola "Terakhir Diperbarui: dd Month yyyy hh.mm"
+    m_update = re.search(r"Terakhir Diperbarui:\s*([\d]+\s+[a-zA-Z]+\s+[\d]+\s+[\d\.]+)", text, re.IGNORECASE)
+    if m_update:
+        return f"Terakhir Diperbarui: {m_update.group(1).strip()}"
+    
+    # 2. Fallback jika tidak ditemukan, cari info tahun produksi
+    m_year = re.search(r"Harga berlaku.*?tahun\s+(\d{4})", text, re.IGNORECASE)
+    if m_year:
+        return f"Harga berlaku produksi tahun {m_year.group(1)}"
+    
+    # 3. Fallback terakhir menggunakan waktu saat ini
     return f"Snapshot {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
 def parse_anekalogam(html: str) -> tuple[pd.DataFrame, str]:
     soup = BeautifulSoup(html, "html.parser")
     text = normalize_spaces(soup.get_text(" ", strip=True))
+    
+    # Sekarang mengambil label berdasarkan teks "Terakhir Diperbarui"
     update_label = parse_update_label(text)
 
-    # Tabel di halaman berisi pola seperti:
-    # "1gram Rp 3.280.000 Rp 2.800.000" dst. :contentReference[oaicite:1]{index=1}
-    # Kita buat regex toleran:
-    # - weight bisa "1gram" atau "1 gram"
-    # - harga bisa "Rp 3.280.000"
     pair = re.compile(
         r"(\d+(?:[.,]\d+)?)\s*gram\s*Rp\s*([\d\.\,]+)\s*Rp\s*([\d\.\,]+)",
         re.IGNORECASE,
@@ -62,8 +68,7 @@ def parse_anekalogam(html: str) -> tuple[pd.DataFrame, str]:
         })
 
     if not rows:
-        # Debug cepat kalau struktur berubah
-        raise RuntimeError("AnekaLogam: tidak menemukan pasangan '<gram> Rp<jual> Rp<beli>'. Struktur halaman berubah.")
+        raise RuntimeError("AnekaLogam: tidak menemukan data harga. Struktur halaman mungkin berubah.")
 
     df = pd.DataFrame(rows).drop_duplicates(subset=["update_label", "weight_g", "sell_idr", "buyback_idr"])
 
