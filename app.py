@@ -1,7 +1,7 @@
 import streamlit as st
+import requests
 import pandas as pd
 import plotly.express as px
-import requests
 from datetime import datetime
 
 # =========================================================
@@ -34,8 +34,66 @@ def fetch_html(url: str) -> str:
         return r.text or ""
     except: return ""
 
+# --- Fungsi untuk mengambil SEMUA DATA dari SEMUA VENDOR ---
+def get_all_active_data():
+    all_rows = []
+    labels = {}
+
+    # Helper untuk memproses dataframe
+    def process_df(df, lbl, name):
+        if not df.empty:
+            df['source_update'] = lbl
+            df['vendor'] = name
+            return df
+        return pd.DataFrame()
+
+    # 1. Galeri 24
+    try:
+        df, lbl = parse_galeri24()
+        all_rows.append(process_df(df, lbl, "Galeri 24"))
+    except: pass
+
+    # 2. Aneka Logam
+    try:
+        df, lbl = parse_anekalogam(fetch_html(URL_ANEKALOGAM))
+        all_rows.append(process_df(df, lbl, "Aneka Logam"))
+    except: pass
+
+    # 3. StarGold (Source TXT)
+    try:
+        df, lbl = parse_stargold("")
+        all_rows.append(process_df(df, lbl, "StarGold"))
+    except: pass
+
+    # 4. HRTA
+    try:
+        df, lbl = parse_hrta(fetch_html(URL_HRTA))
+        all_rows.append(process_df(df, lbl, "HRTA"))
+    except: pass
+
+    # 5. IndoGold
+    try:
+        df, lbl = parse_indogold(fetch_html(URL_INDOGOLD))
+        all_rows.append(process_df(df, lbl, "IndoGold"))
+    except: pass
+
+    # 6. HK Logam Mulia (Hakabe)
+    try:
+        df, lbl = parse_hakabegold()
+        all_rows.append(process_df(df, lbl, "HK Logam Mulia"))
+    except: pass
+
+    # 7. Agung Jewellery
+    try:
+        df, lbl = parse_agungjewellery()
+        all_rows.append(process_df(df, lbl, "Agung Jewellery"))
+    except: pass
+
+    if not all_rows: return pd.DataFrame()
+    return pd.concat(all_rows, ignore_index=True)
+
 # =========================================================
-# 3. SIDEBAR & CONTROL
+# 3. SIDEBAR
 # =========================================================
 with st.sidebar:
     st.title("⚙️ Kontrol Panel")
@@ -53,125 +111,88 @@ tab1, tab2 = st.tabs(["📊 Perbandingan & Detail", "📈 Histori & Grafik"])
 with tab1:
     st.header("Harga Emas Hari Ini")
     
-    # List untuk menampung data semua vendor
-    all_vendors_data = {}
-    summary_100g = []
-
-    # --- PROSES PENGAMBILAN DATA (SEMUA VENDOR) ---
-    # 1. Galeri 24
-    try:
-        df, lbl = parse_galeri24()
-        all_vendors_data["Galeri 24"] = (df, lbl)
-        d100 = df[df['weight_g'] == 100]
-        if not d100.empty:
-            summary_100g.append({"vendor": "Galeri 24", "sell": d100.iloc[0]['sell_idr'], "buy": d100.iloc[0]['buyback_idr'], "update": lbl})
-    except: pass
-
-    # 2. Aneka Logam
-    try:
-        df, lbl = parse_anekalogam(fetch_html(URL_ANEKALOGAM))
-        all_vendors_data["Aneka Logam"] = (df, lbl)
-        d100 = df[df['weight_g'] == 100]
-        if not d100.empty:
-            summary_100g.append({"vendor": "Aneka Logam", "sell": d100.iloc[0]['sell_idr'], "buy": d100.iloc[0]['buyback_idr'], "update": lbl})
-    except: pass
-
-    # 3. StarGold
-    try:
-        df, lbl = parse_stargold("")
-        all_vendors_data["StarGold"] = (df, lbl)
-        d100 = df[df['weight_g'] == 100]
-        if not d100.empty:
-            summary_100g.append({"vendor": "StarGold", "sell": d100.iloc[0]['sell_idr'], "buy": d100.iloc[0]['buyback_idr'], "update": lbl})
-    except: pass
-
-    # 4. HRTA
-    try:
-        df, lbl = parse_hrta(fetch_html(URL_HRTA))
-        all_vendors_data["HRTA"] = (df, lbl)
-        d100 = df[df['weight_g'] == 100]
-        if not d100.empty:
-            summary_100g.append({"vendor": "HRTA", "sell": d100.iloc[0]['sell_idr'], "buy": d100.iloc[0]['buyback_idr'], "update": lbl})
-    except: pass
-
-    # 5. HK Logam Mulia
-    try:
-        df, lbl = parse_hakabegold()
-        all_vendors_data["HK Logam Mulia"] = (df, lbl)
-        d100 = df[df['weight_g'] == 100]
-        if not d100.empty:
-            summary_100g.append({"vendor": "HK Logam Mulia", "sell": d100.iloc[0]['sell_idr'], "buy": d100.iloc[0]['buyback_idr'], "update": lbl})
-    except: pass
-
-    # --- A. BAGIAN RINGKASAN 100G ---
-    st.subheader("🏆 Ringkasan Perbandingan (Pecahan 100g)")
-    if summary_100g:
-        df_sum = pd.DataFrame(summary_100g)
-        view_sum = pd.DataFrame({
-            "Vendor": df_sum["vendor"],
-            "Harga Jual": df_sum["sell"].apply(format_rp),
-            "Harga Beli": df_sum["buy"].apply(format_rp),
-            "Update Web": df_sum["update"]
-        })
-        st.dataframe(view_sum, use_container_width=True, hide_index=True)
+    # Menarik seluruh data (semua pecahan)
+    df_all = get_all_active_data()
+    
+    if not df_all.empty:
+        # Pilihan Mode Tampilan
+        view_mode = st.radio("Pilih Mode Tampilan:", ["Ringkasan 100g", "Detail per Toko"], horizontal=True)
         
-        if st.button("💾 Simpan Ringkasan 100g ke Histori"):
-            df_save = pd.DataFrame({
-                "vendor": df_sum["vendor"], "weight_g": 100,
-                "sell_idr": df_sum["sell"], "buyback_idr": df_sum["buy"],
-                "source_update": df_sum["update"]
-            })
-            if save_to_history(df_save, "Summary_100g"):
-                st.success("✅ Histori Summary_100g diperbarui!")
-    
-    st.divider()
-
-    # --- B. BAGIAN DETAIL PER TOKO (SEMUA PECAHAN) ---
-    st.subheader("🏢 Detail Harga Lengkap Per Vendor")
-    
-    if all_vendors_data:
-        # Gunakan kolom untuk menampilkan detail agar tidak terlalu panjang ke bawah
-        for v_name, (df_v, lbl_v) in all_vendors_data.items():
-            with st.expander(f"🔍 Detail {v_name} - {lbl_v}"):
-                display_v = df_v.copy()
-                display_v['Harga Jual'] = display_v['sell_idr'].apply(format_rp)
-                display_v['Harga Beli'] = display_v['buyback_idr'].apply(format_rp)
-                display_v['Berat'] = display_v['weight_g'].apply(lambda x: f"{x:g} gr")
+        if view_mode == "Ringkasan 100g":
+            st.subheader("🏆 Perbandingan Pecahan 100g")
+            df_100 = df_all[df_all['weight_g'] == 100].copy()
+            
+            if not df_100.empty:
+                display_100 = pd.DataFrame({
+                    "Vendor": df_100["vendor"],
+                    "Harga Jual": df_100["sell_idr"].apply(format_rp),
+                    "Harga Beli": df_100["buyback_idr"].apply(format_rp),
+                    "Update di Web": df_100["source_update"]
+                })
+                st.dataframe(display_100, use_container_width=True, hide_index=True)
                 
-                st.table(display_v[['Berat', 'Harga Jual', 'Harga Beli']])
+                if st.button("💾 Simpan Ringkasan 100g ke Histori"):
+                    if save_to_history(df_100, "Summary_100g"):
+                        st.success("✅ Histori Summary_100g diperbarui!")
+            else:
+                st.warning("Pecahan 100g tidak ditemukan pada beberapa vendor.")
                 
-                # Tombol simpan per vendor jika ingin simpan semua pecahan
-                if st.button(f"Simpan Histori Lengkap {v_name}", key=f"btn_{v_name}"):
-                    df_v['source_update'] = lbl_v
-                    tab_name = v_name.replace(" ", "_")
-                    if save_to_history(df_v, tab_name):
-                        st.success(f"✅ Data {v_name} disimpan ke tab {tab_name}!")
+        else: # Detail per Toko
+            st.subheader("🏢 Detail Lengkap Seluruh Pecahan")
+            for v_name in df_all["vendor"].unique():
+                df_v = df_all[df_all["vendor"] == v_name].sort_values("weight_g")
+                lbl_v = df_v["source_update"].iloc[0]
+                
+                with st.expander(f"🔍 {v_name} - {lbl_v}"):
+                    # Tabel detail
+                    st.table(pd.DataFrame({
+                        "Berat": df_v["weight_g"].apply(lambda x: f"{x:g} gr"),
+                        "Harga Jual": df_v["sell_idr"].apply(format_rp),
+                        "Harga Beli": df_v["buyback_idr"].apply(format_rp)
+                    }))
+                    
+                    # Tombol simpan per toko
+                    if st.button(f"Simpan Histori Lengkap {v_name}", key=f"save_{v_name}"):
+                        tab_name = v_name.replace(" ", "_")
+                        if save_to_history(df_v, tab_name):
+                            st.success(f"✅ Data {v_name} berhasil dicatat di tab {tab_name}!")
     else:
-        st.info("Data belum tersedia. Silakan klik 'Tarik Data Sekarang'.")
+        st.info("Klik 'Tarik Data Sekarang' untuk mengambil harga terbaru.")
 
 # =========================================================
 # 5. TAB HISTORI & GRAFIK
 # =========================================================
 with tab2:
     st.header("📈 Analisis Histori")
-    sheet_opt = st.selectbox("Pilih Sumber Data", ["Summary_100g", "StarGold", "AnekaLogam", "HK_Logam_Mulia", "Galeri24", "HRTA"])
     
+    # List tab yang tersedia di Google Sheets
+    sheet_list = ["Summary_100g", "StarGold", "Aneka_Logam", "HK_Logam_Mulia", "Galeri_24", "HRTA", "IndoGold", "Agung_Jewellery"]
+    sheet_opt = st.selectbox("Pilih Sumber Data Histori", sheet_list)
+    
+    # Ambil data histori dengan ttl=0 agar selalu refresh
     df_hist = get_full_history(sheet_opt)
     
     if not df_hist.empty:
+        # Konversi tipe data
         df_hist['timestamp'] = pd.to_datetime(df_hist['timestamp'])
         
         c1, c2 = st.columns(2)
-        v_sel = c1.selectbox("Pilih Vendor", sorted(df_hist['vendor'].unique()))
-        w_sel = c2.selectbox("Pilih Berat", sorted(df_hist[df_hist['vendor']==v_sel]['weight_g'].unique()))
+        v_list = sorted(df_hist['vendor'].unique())
+        v_sel = c1.selectbox("Pilih Vendor untuk Grafik", v_list)
         
+        w_list = sorted(df_hist[df_hist['vendor'] == v_sel]['weight_g'].unique())
+        w_sel = c2.selectbox("Pilih Berat (gram)", w_list)
+        
+        # Filter untuk grafik
         plot_df = df_hist[(df_hist['vendor'] == v_sel) & (df_hist['weight_g'] == w_sel)].sort_values("timestamp")
         
         if not plot_df.empty:
-            fig = px.line(plot_df, x="timestamp", y="sell_idr", markers=True, title=f"Tren {v_sel} {w_sel}g")
+            fig = px.line(plot_df, x="timestamp", y="sell_idr", markers=True, 
+                         title=f"Tren Harga Jual {v_sel} {w_sel}g",
+                         labels={"timestamp": "Waktu Update", "sell_idr": "Harga (Rp)"})
             st.plotly_chart(fig, use_container_width=True)
             
-        with st.expander("📂 Lihat Data Mentah"):
+        with st.expander("📂 Lihat Data Mentah di Google Sheets"):
             st.dataframe(df_hist.sort_values("timestamp", ascending=False), use_container_width=True, hide_index=True)
     else:
-        st.warning("Belum ada histori.")
+        st.warning(f"Belum ada data di tab '{sheet_opt}'.")
