@@ -148,14 +148,46 @@ with tab1:
 with tab2:
     st.subheader("📈 Grafik Histori")
     sheet_to_view = st.selectbox("Pilih Sumber Data Grafik", ["Summary_100g", "Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold", "HK_Logam_Mulia", "Agung_Jewellery"])
+    
+    # Mengambil data histori
     df_hist = get_full_history(worksheet_name=sheet_to_view)
     
     if not df_hist.empty:
-        c1, c2 = st.columns(2)
-        v_plot = c1.selectbox("Pilih Vendor", df_hist['vendor'].unique())
-        w_plot = c2.selectbox("Pilih Berat", sorted(df_hist['weight_g'].unique()), key="w_plot")
+        # --- PERBAIKAN 1: Pastikan timestamp dikenali sebagai format waktu ---
+        df_hist['timestamp'] = pd.to_datetime(df_hist['timestamp'])
         
-        plot_df = df_hist[(df_hist['vendor'] == v_plot) & (df_hist['weight_g'] == w_plot)]
+        c1, c2 = st.columns(2)
+        v_list = sorted(df_hist['vendor'].unique())
+        v_plot = c1.selectbox("Pilih Vendor", v_list)
+        
+        # --- PERBAIKAN 2: Filter berat hanya yang tersedia untuk vendor tersebut ---
+        available_weights = sorted(df_hist[df_hist['vendor'] == v_plot]['weight_g'].unique())
+        w_plot = c2.selectbox("Pilih Berat (gram)", available_weights, key="w_plot")
+        
+        # --- PERBAIKAN 3: Filter dan WAJIB URUTKAN berdasarkan waktu (timestamp) ---
+        # Tanpa pengurutan, garis grafik akan melompat-lompat tidak beraturan
+        plot_df = df_hist[(df_hist['vendor'] == v_plot) & (df_hist['weight_g'] == w_plot)].sort_values("timestamp")
+        
         if not plot_df.empty:
-            st.plotly_chart(px.line(plot_df, x="timestamp", y="sell_idr", markers=True, title=f"Tren {v_plot} {w_plot}g"), width='stretch')
-        st.expander("📂 Lihat Data Mentah").dataframe(df_hist.sort_values("timestamp", ascending=False), width='stretch')
+            # Membuat grafik
+            fig = px.line(
+                plot_df, 
+                x="timestamp", 
+                y="sell_idr", 
+                markers=True, 
+                title=f"Tren Harga Jual {v_plot} {w_plot}g",
+                labels={"timestamp": "Tanggal & Waktu", "sell_idr": "Harga Jual (Rp)"}
+            )
+            
+            # --- PERBAIKAN 4: Rapikan format angka pada sumbu Y ---
+            fig.update_layout(yaxis_tickformat=',.0f')
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info(f"Tidak ada data untuk {v_plot} dengan berat {w_plot}g.")
+            
+        with st.expander("📂 Lihat Data Mentah"):
+            # Tampilkan data mentah, yang terbaru di atas
+            st.dataframe(df_hist.sort_values("timestamp", ascending=False), use_container_width=True, hide_index=True)
+    else:
+        st.info("Bel_um ada data histori untuk ditampilkan. Silakan simpan data terlebih dahulu.")
