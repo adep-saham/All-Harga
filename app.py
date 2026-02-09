@@ -1,4 +1,3 @@
-
 import streamlit as st
 import requests
 import pandas as pd
@@ -100,8 +99,15 @@ with tab1:
             st.session_state['current_df'] = get_all_comparison_100g()
         else:
             df_detail = pd.DataFrame()
-            # Logika detail per toko (tetap menyertakan update_label)
-            if source_opt == "HK Logam Mulia": df_detail, ul = parse_hakabegold()
+            
+            # --- BAGIAN PERBAIKAN HK LOGAM MULIA ---
+            if source_opt == "HK Logam Mulia": 
+                df_detail, ul = parse_hakabegold()
+                # Pastikan vendor tidak nan jika scraper tidak memberikan nama
+                if not df_detail.empty and (df_detail['vendor'].isna().all()):
+                    df_detail['vendor'] = "HK Logam Mulia"
+            # ---------------------------------------
+            
             elif source_opt == "StarGold": df_detail, ul = parse_stargold("")
             elif source_opt == "Agung Jewellery": df_detail, ul = parse_agungjewellery()
             elif source_opt == "HRTA": df_detail, ul = parse_hrta("")
@@ -112,10 +118,17 @@ with tab1:
                 elif source_opt == "AnekaLogam": df_detail, ul = parse_anekalogam(html)
                 elif source_opt == "IndoGold": df_detail, ul = parse_indogold(html)
             
-            # Tambahkan kolom source_update ke df_detail agar bisa masuk ke Sheet Toko
             if not df_detail.empty:
                 df_detail['source_update'] = ul
-            st.session_state['current_df'] = df_detail
+                
+                # --- FILTER ATURAN: ANTAM HANYA 100G, LAINNYA ASLI ---
+                # Cari baris yang mengandung nama ANTAM
+                is_antam = df_detail['vendor'].str.contains('ANTAM', case=False, na=False)
+                # Terapkan filter: Jika bukan Antam (Lolos) ATAU Jika Antam & Berat 100g (Lolos)
+                df_detail = df_detail[~is_antam | (df_detail['weight_g'] == 100)].copy()
+                
+                # Reset index agar tampilan No/Urutan di tabel rapi
+                st.session_state['current_df'] = df_detail.reset_index(drop=True)
 
     if 'current_df' in st.session_state and not st.session_state['current_df'].empty:
         df_active = st.session_state['current_df']
@@ -165,7 +178,6 @@ with tab2:
         w_plot = c2.selectbox("Pilih Berat (gram)", available_weights, key="w_plot")
         
         # --- PERBAIKAN 3: Filter dan WAJIB URUTKAN berdasarkan waktu (timestamp) ---
-        # Tanpa pengurutan, garis grafik akan melompat-lompat tidak beraturan
         plot_df = df_hist[(df_hist['vendor'] == v_plot) & (df_hist['weight_g'] == w_plot)].sort_values("timestamp")
         
         if not plot_df.empty:
@@ -187,7 +199,6 @@ with tab2:
             st.info(f"Tidak ada data untuk {v_plot} dengan berat {w_plot}g.")
             
         with st.expander("📂 Lihat Data Mentah"):
-            # Tampilkan data mentah, yang terbaru di atas
             st.dataframe(df_hist.sort_values("timestamp", ascending=False), use_container_width=True, hide_index=True)
     else:
-        st.info("Bel_um ada data histori untuk ditampilkan. Silakan simpan data terlebih dahulu.")
+        st.info("Belum ada data histori untuk ditampilkan. Silakan simpan data terlebih dahulu.")
