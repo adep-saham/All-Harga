@@ -4,7 +4,7 @@ import pandas as pd
 from io import BytesIO
 import plotly.express as px
 from datetime import datetime
-import time  # <--- WAJIB UNTUK FIX NAMEERROR
+import time 
 
 # =========================================================
 # LIBRARY GOOGLE DRIVE
@@ -72,7 +72,6 @@ def get_all_comparison_100g():
         try:
             df_tmp, update_label = func() 
             if df_tmp is not None and not df_tmp.empty:
-                # Agar StarGold 100 gr tetap muncul (Antam atau brand StarGold)
                 if name == "StarGold":
                     mask = (df_tmp['vendor'].str.contains('ANTAM|STARGOLD', case=False)) & (df_tmp['weight_g'] == 100)
                 elif name in ["Galeri 24", "IndoGold"]:
@@ -124,17 +123,32 @@ def fetch_all_vendors_full():
 def create_excel_bytes(df):
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        used_names = set()
+        
+        # Tab Summary
         df_100 = df[df['weight_g'] == 100].copy()
-        if not df_100.empty: 
-            df_100.to_excel(writer, index=False, sheet_name='Summary_100g')
+        if not df_100.empty:
+            sheet_summary = "Summary_100g"
+            df_100.to_excel(writer, index=False, sheet_name=sheet_summary)
+            used_names.add(sheet_summary.upper())
+            
+        # Tab per Vendor (Anti Duplikat)
         for vendor in df['vendor'].unique():
-            clean_name = str(vendor).replace(" ", "_").replace("/", "")[:30]
-            df[df['vendor'] == vendor].to_excel(writer, index=False, sheet_name=clean_name)
+            base_name = str(vendor).upper().replace(" ", "_").replace("/", "")[:25]
+            clean_name = base_name
+            counter = 1
+            while clean_name in used_names:
+                clean_name = f"{base_name}_{counter}"
+                counter += 1
+            used_names.add(clean_name)
+            
+            sub_df = df[df['vendor'] == vendor].copy()
+            sub_df.to_excel(writer, index=False, sheet_name=clean_name)
     output.seek(0)
     return output
 
 # =========================================================
-# UI SIDEBAR
+# UI SIDEBAR & MAIN CONTENT (Seperti Versi Sebelumnya)
 # =========================================================
 st.sidebar.title("⚙️ Kontrol")
 mode = st.sidebar.radio("Mode Tampilan", ["📊 Perbandingan 100g (All)", "🏪 Detail Per Toko"])
@@ -159,7 +173,7 @@ if st.sidebar.button("⚡ Generate & Upload ke Drive", type="primary", width='st
                 file_name = f"Rekap_Emas_{timestamp_str}.xlsx"
                 link = upload_to_drive(excel_io, file_name, folder_id_input)
                 if link:
-                    st.sidebar.success("✅ Berhasil Upload!")
+                    st.sidebar.success("✅ Terupload!")
                     st.sidebar.markdown(f"[📂 Buka Drive]({link})")
                     st.session_state['current_df'] = df_full
             else: st.error("Data tidak ditemukan.")
@@ -167,9 +181,6 @@ if st.sidebar.button("⚡ Generate & Upload ke Drive", type="primary", width='st
 st.sidebar.divider()
 render_uploader_sidebar()
 
-# =========================================================
-# MAIN CONTENT
-# =========================================================
 st.title("📊 Monitoring Harga Emas")
 tab1, tab2 = st.tabs(["🕒 Harga Realtime", "📈 Grafik Histori"])
 
@@ -217,5 +228,6 @@ with tab1:
                 }))
 
 with tab2:
-    # Bagian grafik histori tetap sama
+    st.subheader("📈 Grafik Histori")
+    # Bagian grafik tetap seperti sebelumnya
     pass
