@@ -4,10 +4,8 @@ import pandas as pd
 from datetime import datetime
 
 def save_to_history(df_new, worksheet_name="Summary_100g"):
-    """Menyimpan data ke tab spesifik di Google Sheets."""
     if df_new is None or df_new.empty:
         return False
-    
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
         cols = ['timestamp', 'vendor', 'weight_g', 'sell_idr', 'buyback_idr', 'source_update']
@@ -67,7 +65,6 @@ def save_batch_to_history(df_all):
         return False
 
 def get_full_history(worksheet_name="Summary_100g"):
-    """Mengambil data histori tanpa cache (realtime)."""
     try:
         conn = st.connection("gsheets", type=GSheetsConnection)
         return conn.read(worksheet=worksheet_name, ttl=0)
