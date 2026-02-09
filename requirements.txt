@@ -13,3 +13,5 @@ transformers
 plotly
 st-gsheets-connection
 google-api-python-client
+xlsxwriter
+streamlit-gsheets
