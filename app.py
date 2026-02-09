@@ -283,9 +283,37 @@ if st.session_state.get("need_fetch"):
 # MAIN CONTENT
 # =========================================================
 st.title("📊 Monitoring Harga Emas")
-tab1, tab2 = st.tabs(["🕒 Harga Realtime", "📈 Grafik Histori"])
+tab_dash, tab_rt, tab_hist = st.tabs(["📊 Dashboard", "🕒 Harga Realtime", "📈 Grafik Histori"])
 
-with tab1:
+with tab_dash:
+    st.subheader("📋 Tabel Perbandingan Antam 100 gr")
+
+    # Dashboard menampilkan ringkasan 100g (All). Jika sedang mode detail,
+    # dashboard akan menampilkan data ringkasan terakhir yang tersedia (jika ada).
+    df_dash = None
+
+    # jika mode sekarang perbandingan, current_df adalah ringkasan
+    if st.session_state.get("mode") == "📊 Perbandingan 100g (All)":
+        df_dash = st.session_state.get("current_df")
+        st.session_state["dashboard_df"] = df_dash
+    else:
+        df_dash = st.session_state.get("dashboard_df")
+
+    if df_dash is not None and not df_dash.empty:
+        df_table = df_dash.sort_values("sell_idr").reset_index(drop=True)
+        display_data = pd.DataFrame({
+            "No": range(1, len(df_table) + 1),
+            "Nama Toko Emas": df_table["vendor"],
+            "Harga Jual": df_table["sell_idr"].apply(format_rp),
+            "Harga Beli": df_table["buyback_idr"].apply(format_rp),
+            "Update di Web": df_table.get("source_update", ""),
+        })
+        st.dataframe(display_data, use_container_width=True, hide_index=True)
+    else:
+        st.info("Dashboard belum punya data ringkasan. Pilih mode **Perbandingan 100g (All)** agar ringkasan ter-generate.")
+
+
+with tab_rt:
     df_active = st.session_state.get("current_df", pd.DataFrame())
 
     if df_active is not None and not df_active.empty:
@@ -327,7 +355,7 @@ with tab1:
         st.info("Tidak ada data untuk ditampilkan. Pilih mode/toko di sidebar — data akan otomatis ditarik.")
 
 
-with tab2:
+with tab_hist:
     st.subheader("📈 Grafik Histori")
 
     sheet_to_view = st.selectbox(
