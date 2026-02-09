@@ -6,7 +6,6 @@ from typing import Tuple
 # =====================================================
 # SOURCE
 # =====================================================
-# Pastikan nama variabel ini sesuai dengan yang di-import di app.py
 URL_HAKABEGOLD = (
     "https://docs.google.com/spreadsheets/d/e/"
     "2PACX-1vRNGDnYTm5AU122rdZqSxNyn4seEQ9S0wVSdMTzo9QD6MDCITnasamftQLY0tLQ5A"
@@ -17,9 +16,6 @@ URL_HAKABEGOLD = (
 # HELPERS
 # =====================================================
 def _clean_rp(x) -> int:
-    """
-    Bersihkan format Rupiah dari string menjadi angka murni.
-    """
     if pd.isna(x):
         return 0
     s = re.sub(r"[^\d]", "", str(x))
@@ -29,46 +25,53 @@ def _clean_rp(x) -> int:
 # MAIN PARSER
 # =====================================================
 def parse_hakabegold() -> Tuple[pd.DataFrame, str]:
-    """
-    Menarik data dari Google Sheets dan mengambil harga beli (buyback) 
-    langsung dari kolom di sheet.
-    """
-    # Menambahkan cache buster (&cb=...) agar Google memberikan data terbaru
+    # Menambahkan cache buster
     current_url = f"{URL_HAKABEGOLD}&cb={int(time.time())}"
     
     try:
-        # 1. Baca CSV dari URL
+        # 1. Baca seluruh CSV mentah
         raw = pd.read_csv(current_url, header=None)
 
-        # 2. Filter baris yang berisi data berat (kolom 0 harus numerik)
+        # -------------------------------------------------
+        # 2. LOGIKA MENCARI TANGGAL (UPDATE BARU)
+        # -------------------------------------------------
+        # Kita cari di kolom pertama (indeks 0) baris yang mengandung nama hari atau tahun
+        date_keywords = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', '2026']
+        date_row = raw[0].astype(str).str.contains('|'.join(date_keywords), na=False)
+        
+        if date_row.any():
+            # Ambil teks tanggal pertama yang ditemukan
+            extracted_date = raw[0][date_row].iloc[0].strip()
+        else:
+            extracted_date = f"Live: {time.strftime('%H:%M:%S')}"
+
+        # -------------------------------------------------
+        # 3. Ambil data BERAT (Hanya baris numerik)
+        # -------------------------------------------------
         data = raw[pd.to_numeric(raw[0], errors="coerce").notna()].copy()
         
         if data.empty:
-            return pd.DataFrame(), "Data tidak ditemukan (Sheet Kosong)"
+            return pd.DataFrame(), f"Data berat tidak ditemukan ({extracted_date})"
 
-        # 3. Mapping data langsung dari kolom Sheet:
-        # Col 0 = Berat (weight_g)
-        # Col 1 = Harga Jual (sell_idr)
-        # Col 2 = Harga Beli/Buyback (buyback_idr)
+        # 4. Mapping data
         df = pd.DataFrame({
             "vendor": "HK Logam Mulia",
             "weight_g": data[0].astype(float),
             "sell_idr": data[1].apply(_clean_rp),
-            "buyback_idr": data[2].apply(_clean_rp), # Ambil harga beli dari kolom C
+            "buyback_idr": data[2].apply(_clean_rp),
             "stock": "Ready"
         })
 
-        # 4. Hapus duplikat dan ambil harga terbaik
+        # 5. DEDUP & SORT
         df = (
             df.sort_values("sell_idr", ascending=True)
               .drop_duplicates(subset="weight_g", keep="first")
         )
-
-        # 5. Pembersihan akhir dan pengurutan
         df = df[(df["weight_g"] > 0) & (df["sell_idr"] > 0)]
         df = df.sort_values("weight_g").reset_index(drop=True)
 
-        label = f"HK Logam Mulia (Live Sheet Update: {time.strftime('%H:%M:%S')})"
+        # Masukkan tanggal yang ditemukan ke dalam label
+        label = f"HK Logam Mulia ({extracted_date})"
 
         return df, label
 
