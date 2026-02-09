@@ -1,17 +1,8 @@
 import streamlit as st
 import requests
 import pandas as pd
-from io import BytesIO
-import plotly.express as px
 from datetime import datetime
-import time  # <--- WAJIB: Memperbaiki NameError saat progress bar berjalan
-
-# =========================================================
-# LIBRARY GOOGLE DRIVE
-# =========================================================
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
+import time # <--- Tetap ada untuk mencegah error progress bar
 
 # =========================================================
 # IMPORT SCRAPERS & UTILS
@@ -43,37 +34,8 @@ def fetch_html(url: str) -> str:
         return r.text or ""
     except: return ""
 
-def upload_to_drive(excel_bytes, filename, folder_id):
-    """
-    Fungsi upload ke Drive. 
-    PENTING: Pastikan folder ID sudah di-share ke email Service Account sebagai EDITOR.
-    """
-    try:
-        creds_dict = dict(st.secrets["connections"]["gsheets"])
-        SCOPES = ['https://www.googleapis.com/auth/drive.file']
-        creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-        service = build('drive', 'v3', credentials=creds)
-        
-        # 'parents' memaksa file masuk ke folder Anda (menggunakan kuota Anda, bukan Service Account)
-        file_metadata = {'name': filename, 'parents': [folder_id]}
-        media = MediaIoBaseUpload(
-            excel_bytes, 
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 
-            resumable=True
-        )
-        
-        file = service.files().create(
-            body=file_metadata, 
-            media_body=media, 
-            fields='id, webViewLink'
-        ).execute()
-        return file.get('webViewLink')
-    except Exception as e:
-        st.error(f"❌ Drive Error: {e}")
-        return None
-
 def get_all_comparison_100g():
-    """Mengambil data perbandingan 100gr dari semua vendor"""
+    """Mengambil data 100gr dengan filter StarGold yang sudah aman"""
     results = []
     scrapers = [
         ("StarGold", lambda: parse_stargold("")),
@@ -88,7 +50,7 @@ def get_all_comparison_100g():
         try:
             df_tmp, update_label = func() 
             if df_tmp is not None and not df_tmp.empty:
-                # Filter khusus StarGold agar tetap muncul (Brand ANTAM atau STARGOLD)
+                # Logika filter StarGold (Antam atau brand StarGold)
                 if name == "StarGold":
                     mask = (df_tmp['vendor'].str.contains('ANTAM|STARGOLD', case=False)) & (df_tmp['weight_g'] == 100)
                 elif name in ["Galeri 24", "IndoGold"]:
@@ -107,68 +69,8 @@ def get_all_comparison_100g():
         except: continue
     return pd.DataFrame(results)
 
-def fetch_all_vendors_full():
-    """Menjalankan semua scraper untuk laporan lengkap"""
-    all_data = []
-    scrapers = [
-        ("StarGold", lambda: parse_stargold("")),
-        ("Galeri 24", lambda: parse_galeri24(fetch_html(URL_GALERI24))),
-        ("Aneka Logam", lambda: parse_anekalogam(fetch_html(URL_ANEKALOGAM))),
-        ("HRTA GOLD", lambda: parse_hrta("")),
-        ("IndoGold", lambda: parse_indogold(fetch_html(URL_INDOGOLD))),
-        ("HK Logam Mulia", lambda: parse_hakabegold()),
-        ("Agung Jewellery", lambda: parse_agungjewellery()),
-    ]
-    my_bar = st.progress(0, text="Menarik data...")
-    for i, (name, func) in enumerate(scrapers):
-        my_bar.progress((i / len(scrapers)), text=f"Scraping: {name}...")
-        try:
-            df_tmp, update_label = func()
-            if df_tmp is not None and not df_tmp.empty:
-                df_tmp['source_update'] = update_label
-                if 'vendor' not in df_tmp.columns: df_tmp['vendor'] = name
-                all_data.append(df_tmp)
-        except: pass
-    my_bar.progress(1.0, text="Selesai.")
-    time.sleep(0.5) 
-    my_bar.empty()
-    if all_data:
-        full = pd.concat(all_data, ignore_index=True)
-        full['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        return full
-    return pd.DataFrame()
-
-def create_excel_bytes(df):
-    """Membuat file Excel dengan penanganan nama sheet duplikat"""
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        used_names = set()
-        
-        # 1. Tab Summary
-        df_100 = df[df['weight_g'] == 100].copy()
-        if not df_100.empty:
-            sheet_summary = "Summary_100g"
-            df_100.to_excel(writer, index=False, sheet_name=sheet_summary)
-            used_names.add(sheet_summary.upper())
-            
-        # 2. Tab Per Vendor
-        for vendor in df['vendor'].unique():
-            base_name = str(vendor).upper().replace(" ", "_").replace("/", "")[:25]
-            clean_name = base_name
-            counter = 1
-            while clean_name in used_names:
-                clean_name = f"{base_name}_{counter}"
-                counter += 1
-            used_names.add(clean_name)
-            
-            sub_df = df[df['vendor'] == vendor].copy()
-            sub_df.to_excel(writer, index=False, sheet_name=clean_name)
-            
-    output.seek(0)
-    return output
-
 # =========================================================
-# UI RENDER
+# UI SIDEBAR
 # =========================================================
 st.sidebar.title("⚙️ Kontrol")
 mode = st.sidebar.radio("Mode Tampilan", ["📊 Perbandingan 100g (All)", "🏪 Detail Per Toko"])
@@ -176,31 +78,29 @@ if mode == "🏪 Detail Per Toko":
     source_opt = st.sidebar.selectbox("Pilih Toko", ["Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold", "HK Logam Mulia", "Agung Jewellery"])
 else: source_opt = "All 100g"
 
-btn_fetch = st.sidebar.button("🚀 Lihat Data (View Only)", width='stretch')
+btn_fetch = st.sidebar.button("🚀 Lihat Data Terbaru", width='stretch')
 
 st.sidebar.divider()
-st.sidebar.subheader("☁️ Simpan ke Drive")
-folder_id_input = st.sidebar.text_input("ID Folder Google Drive", value="1zJsAPL-2Ry8e3W6B3641Fjub-v4AKD33")
-
-if st.sidebar.button("⚡ Generate & Upload ke Drive", type="primary", width='stretch'):
-    if not folder_id_input: st.sidebar.error("⚠️ Masukkan ID Folder Drive!")
-    else:
-        with st.spinner("Sedang memproses laporan..."):
-            df_full = fetch_all_vendors_full()
-            if not df_full.empty:
-                excel_io = create_excel_bytes(df_full)
-                timestamp_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
-                file_name = f"Rekap_Emas_{timestamp_str}.xlsx"
-                link = upload_to_drive(excel_io, file_name, folder_id_input)
-                if link:
-                    st.sidebar.success("✅ Berhasil Upload!")
-                    st.sidebar.markdown(f"[📂 Buka Drive]({link})")
-                    st.session_state['current_df'] = df_full
-            else: st.error("Data tidak ditemukan.")
+# Memindahkan fitur simpan ke Google Sheets sebagai pengganti Drive
+if st.sidebar.button("💾 Simpan Semua ke Google Sheets", type="primary", width='stretch'):
+    with st.spinner("Menyimpan ke histori..."):
+        # Ambil data perbandingan 100g
+        df_to_save = get_all_comparison_100g()
+        if not df_to_save.empty:
+            # Simpan ke worksheet 'Summary_100g' di Google Sheets Anda
+            if save_to_history(df_to_save, worksheet_name="Summary_100g"):
+                st.sidebar.success("✅ Histori 100g Tersimpan!")
+            else:
+                st.sidebar.error("❌ Gagal simpan ke Sheets.")
+        else:
+            st.sidebar.warning("Data kosong.")
 
 st.sidebar.divider()
 render_uploader_sidebar()
 
+# =========================================================
+# MAIN CONTENT
+# =========================================================
 st.title("📊 Monitoring Harga Emas")
 tab1, tab2 = st.tabs(["🕒 Harga Realtime", "📈 Grafik Histori"])
 
@@ -228,8 +128,7 @@ with tab1:
         df_active = st.session_state['current_df']
         if mode == "📊 Perbandingan 100g (All)":
             st.subheader("📋 Tabel Perbandingan Antam 100 gr")
-            df_view = df_active[df_active['weight_g'] == 100].copy() if 'weight_g' in df_active.columns else df_active
-            df_table = df_view.sort_values("sell_idr").reset_index(drop=True)
+            df_table = df_active.sort_values("sell_idr").reset_index(drop=True)
             st.dataframe(pd.DataFrame({
                 "No": range(1, len(df_table) + 1),
                 "Nama Toko": df_table["vendor"],
@@ -249,11 +148,12 @@ with tab1:
 
 with tab2:
     st.subheader("📈 Grafik Histori")
-    sheet_to_view = st.selectbox("Sumber Grafik", ["Summary_100g", "Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold", "HK_Logam_Mulia", "Agung_Jewellery"])
+    sheet_to_view = st.selectbox("Sumber Data", ["Summary_100g", "Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold", "HK_Logam_Mulia", "Agung_Jewellery"])
     df_hist = get_full_history(worksheet_name=sheet_to_view)
     if not df_hist.empty:
-        v_plot = st.selectbox("Vendor", df_hist['vendor'].unique())
-        w_plot = st.selectbox("Berat", sorted(df_hist['weight_g'].unique()))
+        c1, c2 = st.columns(2)
+        v_plot = c1.selectbox("Vendor", df_hist['vendor'].unique())
+        w_plot = c2.selectbox("Berat", sorted(df_hist['weight_g'].unique()))
         plot_df = df_hist[(df_hist['vendor'] == v_plot) & (df_hist['weight_g'] == w_plot)]
         if not plot_df.empty:
-            st.plotly_chart(px.line(plot_df, x="timestamp", y="sell_idr", markers=True, title=f"Tren {v_plot}"), width='stretch')
+            st.plotly_chart(px.line(plot_df, x="timestamp", y="sell_idr", markers=True, title=f"Tren Harga {v_plot}"), width='stretch')
