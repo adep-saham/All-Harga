@@ -4,7 +4,7 @@ import pandas as pd
 from io import BytesIO
 import plotly.express as px
 from datetime import datetime
-import time  # <--- PERBAIKAN: Ditambahkan agar tidak error NameError
+import time  # <--- PERBAIKAN: Menghindari NameError: time
 
 # =========================================================
 # LIBRARY GOOGLE DRIVE
@@ -44,20 +44,24 @@ def fetch_html(url: str) -> str:
     except: return ""
 
 def upload_to_drive(excel_bytes, filename, folder_id):
+    """Mengunggah file ke Google Drive menggunakan Service Account"""
     try:
         creds_dict = dict(st.secrets["connections"]["gsheets"])
         SCOPES = ['https://www.googleapis.com/auth/drive.file']
         creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
         service = build('drive', 'v3', credentials=creds)
+        
         file_metadata = {'name': filename, 'parents': [folder_id]}
         media = MediaIoBaseUpload(excel_bytes, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', resumable=True)
+        
         file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
         return file.get('webViewLink')
     except Exception as e:
-        st.error(f"Gagal Upload ke Drive: {e}")
+        st.error(f"❌ Drive Error: {e}")
         return None
 
 def get_all_comparison_100g():
+    """Mengambil data Antam 100gr dari semua toko untuk tabel perbandingan"""
     results = []
     scrapers = [
         ("StarGold", lambda: parse_stargold("")),
@@ -72,7 +76,7 @@ def get_all_comparison_100g():
         try:
             df_tmp, update_label = func() 
             if df_tmp is not None and not df_tmp.empty:
-                # Memastikan StarGold 100gr tetap terbaca (Antam atau StarGold brand)
+                # FILTER: StarGold sering menampilkan brand 'STARGOLD' atau 'ANTAM'
                 if name == "StarGold":
                     mask = (df_tmp['vendor'].str.contains('ANTAM|STARGOLD', case=False)) & (df_tmp['weight_g'] == 100)
                 elif name in ["Galeri 24", "IndoGold"]:
@@ -92,6 +96,7 @@ def get_all_comparison_100g():
     return pd.DataFrame(results)
 
 def fetch_all_vendors_full():
+    """Menarik semua data dari semua toko untuk pembuatan laporan Excel"""
     all_data = []
     scrapers = [
         ("StarGold", lambda: parse_stargold("")),
@@ -122,15 +127,17 @@ def fetch_all_vendors_full():
     return pd.DataFrame()
 
 def create_excel_bytes(df):
+    """Membuat file Excel di memori (membutuhkan library xlsxwriter)"""
     output = BytesIO()
-    # Menggunakan engine xlsxwriter untuk membuat file Excel
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        # Tab Ringkasan 100g
         df_100 = df[df['weight_g'] == 100].copy()
         if not df_100.empty: 
             df_100.to_excel(writer, index=False, sheet_name='Summary_100g')
         
+        # Tab detail per vendor
         for vendor in df['vendor'].unique():
-            # Aturan Excel: Nama sheet tidak boleh > 31 karakter
+            # Nama tab maksimal 31 karakter
             clean_name = str(vendor).replace(" ", "_").replace("/", "")[:30]
             df[df['vendor'] == vendor].to_excel(writer, index=False, sheet_name=clean_name)
     output.seek(0)
@@ -155,7 +162,7 @@ if st.sidebar.button("⚡ Generate & Upload ke Drive", type="primary", width='st
     if not folder_id_input: 
         st.sidebar.error("⚠️ Masukkan ID Folder Drive!")
     else:
-        with st.spinner("Sedang memproses scraping dan upload..."):
+        with st.spinner("Sedang memproses..."):
             df_full = fetch_all_vendors_full()
             if not df_full.empty:
                 excel_io = create_excel_bytes(df_full)
@@ -166,10 +173,8 @@ if st.sidebar.button("⚡ Generate & Upload ke Drive", type="primary", width='st
                     st.sidebar.success("✅ Berhasil Upload!")
                     st.sidebar.markdown(f"[📂 Buka Drive]({link})")
                     st.session_state['current_df'] = df_full
-                else:
-                    st.error("Gagal Upload. Cek log atau izin folder.")
             else: 
-                st.error("Data tidak ditemukan saat proses scraping.")
+                st.error("Gagal menarik data. Pastikan sumber data tersedia.")
 
 st.sidebar.divider()
 render_uploader_sidebar()
@@ -215,6 +220,7 @@ with tab1:
                 "Update": df_table["source_update"]
             }), width='stretch', hide_index=True)
         else:
+            # Perbaikan: Menampilkan semua vendor yang ada di data (Penting untuk StarGold)
             for v_name in df_active["vendor"].unique():
                 st.subheader(f"🏢 {v_name}")
                 sub = df_active[df_active["vendor"] == v_name].sort_values("weight_g")
