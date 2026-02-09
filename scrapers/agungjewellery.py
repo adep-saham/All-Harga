@@ -3,12 +3,14 @@ import pandas as pd
 import re
 from bs4 import BeautifulSoup
 from typing import Tuple
+import time
 
 URL_AGUNG = "https://agungjewellery.com/harga-lm-2/"
 
 
 # =========================
 # HELPERS
+# =
 # =========================
 def _clean_rp(text: str) -> int:
     if not text:
@@ -24,6 +26,7 @@ def _extract_weight(text: str) -> float:
 
 # =========================
 # PARSER
+# =
 # =========================
 def parse_agungjewellery() -> Tuple[pd.DataFrame, str]:
     headers = {
@@ -35,76 +38,97 @@ def parse_agungjewellery() -> Tuple[pd.DataFrame, str]:
         "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
     }
 
-    resp = requests.get(URL_AGUNG, headers=headers, timeout=30)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(URL_AGUNG, headers=headers, timeout=30)
+        resp.raise_for_status()
 
-    html = resp.text
-    soup = BeautifulSoup(html, "html.parser")
+        html = resp.text
+        soup = BeautifulSoup(html, "html.parser")
 
-    records = []
+        # -------------------------------------------------
+        # 1. CARI INFO TANGGAL UPDATE (UPDATE BARU)
+        # -------------------------------------------------
+        # Mencari teks yang mengandung "Last updated:" di seluruh halaman
+        update_text = soup.find(string=re.compile(r"Last updated:", re.IGNORECASE))
+        
+        if update_text:
+            extracted_date = update_text.strip()
+        else:
+            # Fallback jika teks tidak ditemukan, gunakan jam sistem
+            extracted_date = f"LM Certicard (Fetched: {time.strftime('%H:%M')})"
 
-    # =====================================================
-    # 1️⃣ PRIMARY: DOM TABLE PARSING
-    # =====================================================
-    table = soup.find("table", id="table_17973856")
-    if table and table.find("tbody"):
-        for row in table.find("tbody").find_all("tr"):
-            cols = [c.get_text(strip=True) for c in row.find_all("td")]
-            if len(cols) != 3:
-                continue
+        records = []
 
-            pecahan, jual, buy = cols
+        # =====================================================
+        # 2. PRIMARY: DOM TABLE PARSING
+        # =====================================================
+        # Mencari tabel harga spesifik di web Agung Jewellery
+        table = soup.find("table", id="table_17973856")
+        if table and table.find("tbody"):
+            for row in table.find("tbody").find_all("tr"):
+                cols = [c.get_text(strip=True) for c in row.find_all("td")]
+                if len(cols) != 3:
+                    continue
 
-            if "(certicard)" not in pecahan.lower():
-                continue
-            if "non rm" in pecahan.lower():
-                continue
+                pecahan, jual, buy = cols
 
-            weight = _extract_weight(pecahan)
-            sell = _clean_rp(jual)
-            buyback = _clean_rp(buy)
+                # Filter hanya untuk LM Certicard sesuai permintaan
+                if "(certicard)" not in pecahan.lower():
+                    continue
+                if "non rm" in pecahan.lower():
+                    continue
 
-            if weight > 0 and sell > 0 and buyback > 0:
-                records.append({
-                    "vendor": "Agung Jewellery",
-                    "weight_g": weight,
-                    "sell_idr": sell,
-                    "buyback_idr": buyback,
-                    "stock": "Ready"
-                })
+                weight = _extract_weight(pecahan)
+                sell = _clean_rp(jual)
+                buyback = _clean_rp(buy)
 
-    # =====================================================
-    # 2️⃣ FALLBACK: REGEX TEXT PARSING
-    # =====================================================
-    if not records:
-        pattern = re.compile(
-            r"(\d+(?:[\.,]\d+)?)\s*gr\s*\(Certicard\).*?"
-            r"<td>\s*([\d\.]+)\s*</td>\s*<td>\s*([\d\.]+)\s*</td>",
-            re.IGNORECASE | re.DOTALL
+                if weight > 0 and sell > 0 and buyback > 0:
+                    records.append({
+                        "vendor": "Agung Jewellery",
+                        "weight_g": weight,
+                        "sell_idr": sell,
+                        "buyback_idr": buyback,
+                        "stock": "Ready"
+                    })
+
+        # =====================================================
+        # 3. FALLBACK: REGEX TEXT PARSING
+        # =====================================================
+        if not records:
+            pattern = re.compile(
+                r"(\d+(?:[\.,]\d+)?)\s*gr\s*\(Certicard\).*?"
+                r"<td>\s*([\d\.]+)\s*</td>\s*<td>\s*([\d\.]+)\s*</td>",
+                re.IGNORECASE | re.DOTALL
+            )
+
+            for w, jual, buy in pattern.findall(html):
+                weight = float(w.replace(",", "."))
+                sell = _clean_rp(jual)
+                buyback = _clean_rp(buy)
+
+                if weight > 0 and sell > 0 and buyback > 0:
+                    records.append({
+                        "vendor": "Agung Jewellery",
+                        "weight_g": weight,
+                        "sell_idr": sell,
+                        "buyback_idr": buyback,
+                        "stock": "Ready"
+                    })
+
+        if not records:
+            return pd.DataFrame(), f"Data Agung Jewellery Kosong ({extracted_date})"
+
+        df = (
+            pd.DataFrame(records)
+            .drop_duplicates(subset="weight_g")
+            .sort_values("weight_g")
+            .reset_index(drop=True)
         )
 
-        for w, jual, buy in pattern.findall(html):
-            weight = float(w.replace(",", "."))
-            sell = _clean_rp(jual)
-            buyback = _clean_rp(buy)
+        # Label final menggunakan tanggal yang berhasil diekstrak
+        label = f"Agung Jewellery ({extracted_date})"
 
-            if weight > 0 and sell > 0 and buyback > 0:
-                records.append({
-                    "vendor": "Agung Jewellery",
-                    "weight_g": weight,
-                    "sell_idr": sell,
-                    "buyback_idr": buyback,
-                    "stock": "Ready"
-                })
+        return df, label
 
-    if not records:
-        raise ValueError("Data harga Agung Jewellery kosong setelah parsing.")
-
-    df = (
-        pd.DataFrame(records)
-        .drop_duplicates(subset="weight_g")
-        .sort_values("weight_g")
-        .reset_index(drop=True)
-    )
-
-    return df, "Agung Jewellery (LM Certicard)"
+    except Exception as e:
+        return pd.DataFrame(), f"Error Agung: {str(e)}"
