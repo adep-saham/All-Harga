@@ -3,19 +3,31 @@ import os
 import pandas as pd
 import re
 import glob
+from datetime import datetime
 from bs4 import BeautifulSoup
 
 URL_STARGOLD = "https://stargold.id/price/"
+
+def extract_date_from_filename(filename: str) -> datetime:
+    """Mengambil tanggal dari nama file format DDMMYYYY untuk sorting yang benar."""
+    match = re.search(r'(\d{8})', filename)
+    if match:
+        try:
+            return datetime.strptime(match.group(1), '%d%m%Y')
+        except:
+            pass
+    return datetime.min
 
 def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
     final_html = html
     source_label = "Live Web"
 
-    # --- 1. AMBIL SOURCE ---
+    # --- 1. AMBIL SOURCE (Urutkan Berdasarkan Tanggal Asli) ---
     if not final_html or len(final_html) < 500:
         potential_files = glob.glob("Source Web*.txt") + glob.glob("source web*.txt")
         if potential_files:
-            target_file = sorted(potential_files)[-1]
+            # FIX: Menggunakan fungsi pencari tanggal agar 09 Feb > 31 Jan
+            target_file = max(potential_files, key=extract_date_from_filename)
             try:
                 with open(target_file, "r", encoding="utf-8", errors="ignore") as f:
                     final_html = f.read()
@@ -26,11 +38,11 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
         if not final_html:
             return pd.DataFrame(), "Gagal: File 'Source Web' tidak ditemukan."
 
-    # --- 2. EKSTRAKSI ---
+    # --- 2. EKSTRAKSI DATA ---
     try:
         soup = BeautifulSoup(final_html, 'html.parser')
         
-        # Cari Last Update (Regex lebih fleksibel)
+        # Ekstrak waktu update dari teks
         extracted_update = "N/A"
         text_full = soup.get_text()
         update_match = re.search(r"Last Update\s*:\s*([\d/]+\s*[\d:]+)", text_full)
@@ -39,18 +51,18 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
 
         all_data = []
         
-        # Cari semua judul (h2, h3, atau div class section-title)
-        tags = soup.find_all(['h2', 'h3', 'div', 'b', 'strong'])
+        # Cari semua elemen judul yang mungkin mengandung nama brand
+        tags = soup.find_all(['h2', 'h3', 'div', 'b', 'strong', 'span'])
         
         for tag in tags:
             tag_text = tag.get_text(strip=True).upper()
             
-            # Kita hanya proses jika ada kata kunci vendor utama
-            target_vendors = ["STARGOLD", "ANTAM", "EMASKITA", "EMASKU", "UBS", "LOTUS", "WARIS"]
+            # Daftar brand yang kita cari di dalam file Stargold
+            target_vendors = ["STARGOLD", "ANTAM", "EMASKITA", "EMASKU", "UBS", "LOTUS"]
             matched_vendor = next((v for v in target_vendors if v in tag_text), None)
             
             if matched_vendor:
-                # Cari tabel terdekat setelah judul ini
+                # Cari tabel terdekat SETELAH judul vendor ini
                 table = tag.find_next('table')
                 if table:
                     rows = table.find_all('tr')
@@ -58,13 +70,13 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
                         cols = tr.find_all('td')
                         if len(cols) >= 3:
                             try:
-                                # Kolom 0: Berat (Hapus semua kecuali angka dan koma/titik)
+                                # Kolom 0: Berat (e.g. "100 gr" -> 100.0)
                                 raw_w = cols[0].get_text(strip=True).replace(",", ".")
                                 weight_match = re.findall(r"[-+]?\d*\.\d+|\d+", raw_w)
                                 if not weight_match: continue
                                 weight_val = float(weight_match[0])
 
-                                # Kolom 1 & 2: Harga (Hapus semua kecuali angka)
+                                # Kolom 1 & 2: Harga (Ambil hanya angka)
                                 sell_val = "".join(re.findall(r'\d+', cols[1].get_text()))
                                 buy_val = "".join(re.findall(r'\d+', cols[2].get_text()))
 
@@ -83,10 +95,10 @@ def parse_stargold(html: str = "") -> tuple[pd.DataFrame, str]:
 
         # --- 3. CLEANING ---
         df = pd.DataFrame(all_data)
-        # Hapus baris yang mungkin sampah (berat 0 atau harga 0)
+        # Hapus data sampah
         df = df[(df['weight_g'] > 0) & (df['sell_idr'] > 0)]
-        # Hilangkan duplikat
-        df = df.drop_duplicates(subset=["vendor", "weight_g", "sell_idr"], keep="first")
+        # Hapus duplikat (utamakan harga pertama yang ditemukan)
+        df = df.drop_duplicates(subset=["vendor", "weight_g"], keep="first")
         df = df.sort_values(["vendor", "weight_g"]).reset_index(drop=True)
         
         return df, extracted_update
