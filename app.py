@@ -1,9 +1,10 @@
 import streamlit as st
 import requests
 import pandas as pd
-import plotly.express as px  # <--- FIX: Ini yang tadi hilang sehingga menyebabkan NameError
+import plotly.express as px  # Perbaikan: Menghindari NameError saat memuat grafik
 from datetime import datetime
-import time 
+import time # Perbaikan: Menghindari NameError saat menggunakan progress bar
+from io import BytesIO
 
 # =========================================================
 # IMPORT SCRAPERS & UTILS
@@ -36,7 +37,7 @@ def fetch_html(url: str) -> str:
     except: return ""
 
 def get_all_comparison_100g():
-    """Mengambil data 100gr dengan filter StarGold yang sudah aman"""
+    """Mengambil data perbandingan khusus 100gr dari semua sumber"""
     results = []
     scrapers = [
         ("StarGold", lambda: parse_stargold("")),
@@ -51,7 +52,7 @@ def get_all_comparison_100g():
         try:
             df_tmp, update_label = func() 
             if df_tmp is not None and not df_tmp.empty:
-                # Logika filter StarGold (Antam atau brand StarGold)
+                # Filter khusus untuk memastikan data 100gr (ANTAM/STARGOLD)
                 if name == "StarGold":
                     mask = (df_tmp['vendor'].str.contains('ANTAM|STARGOLD', case=False)) & (df_tmp['weight_g'] == 100)
                 elif name in ["Galeri 24", "IndoGold"]:
@@ -70,6 +71,59 @@ def get_all_comparison_100g():
         except: continue
     return pd.DataFrame(results)
 
+def fetch_all_vendors_full():
+    """Menarik semua data lengkap dari semua vendor"""
+    all_data = []
+    scrapers = [
+        ("StarGold", lambda: parse_stargold("")),
+        ("Galeri 24", lambda: parse_galeri24(fetch_html(URL_GALERI24))),
+        ("Aneka Logam", lambda: parse_anekalogam(fetch_html(URL_ANEKALOGAM))),
+        ("HRTA GOLD", lambda: parse_hrta("")),
+        ("IndoGold", lambda: parse_indogold(fetch_html(URL_INDOGOLD))),
+        ("HK Logam Mulia", lambda: parse_hakabegold()),
+        ("Agung Jewellery", lambda: parse_agungjewellery()),
+    ]
+    my_bar = st.progress(0, text="Menarik data...")
+    for i, (name, func) in enumerate(scrapers):
+        my_bar.progress((i / len(scrapers)), text=f"Scraping: {name}...")
+        try:
+            df_tmp, update_label = func()
+            if df_tmp is not None and not df_tmp.empty:
+                df_tmp['source_update'] = update_label
+                if 'vendor' not in df_tmp.columns: df_tmp['vendor'] = name
+                all_data.append(df_tmp)
+        except: pass
+    my_bar.progress(1.0, text="Selesai.")
+    time.sleep(0.5) 
+    my_bar.empty()
+    if all_data:
+        full = pd.concat(all_data, ignore_index=True)
+        full['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return full
+    return pd.DataFrame()
+
+def create_excel_bytes(df):
+    """Fungsi pembuatan Excel lokal dengan proteksi nama sheet duplikat"""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        used_names = set()
+        df_100 = df[df['weight_g'] == 100].copy()
+        if not df_100.empty:
+            df_100.to_excel(writer, index=False, sheet_name="Summary_100g")
+            used_names.add("SUMMARY_100G")
+            
+        for vendor in df['vendor'].unique():
+            base_name = str(vendor).upper().replace(" ", "_").replace("/", "")[:25]
+            clean_name = base_name
+            counter = 1
+            while clean_name in used_names:
+                clean_name = f"{base_name}_{counter}"
+                counter += 1
+            used_names.add(clean_name)
+            df[df['vendor'] == vendor].to_excel(writer, index=False, sheet_name=clean_name)
+    output.seek(0)
+    return output
+
 # =========================================================
 # UI SIDEBAR
 # =========================================================
@@ -83,16 +137,25 @@ btn_fetch = st.sidebar.button("🚀 Lihat Data Terbaru", width='stretch')
 
 st.sidebar.divider()
 
+# FITUR SIMPAN: Summary 100g & Detail Per Toko
 if st.sidebar.button("💾 Simpan Semua ke Google Sheets", type="primary", width='stretch'):
-    with st.spinner("Menyimpan ke histori..."):
-        df_to_save = get_all_comparison_100g()
-        if not df_to_save.empty:
-            if save_to_history(df_to_save, worksheet_name="Summary_100g"):
-                st.sidebar.success("✅ Histori 100g Tersimpan!")
-            else:
-                st.sidebar.error("❌ Gagal simpan ke Sheets.")
+    with st.spinner("Sedang scraping & menyimpan data lengkap..."):
+        df_full = fetch_all_vendors_full() 
+        if not df_full.empty:
+            # Simpan Summary 100g
+            df_100g = df_full[df_full['weight_g'] == 100].copy()
+            if not df_100g.empty:
+                save_to_history(df_100g, worksheet_name="Summary_100g")
+            
+            # Simpan Detail Per Toko ke Worksheet Masing-Masing
+            for vendor in df_full['vendor'].unique():
+                df_vendor = df_full[df_full['vendor'] == vendor].copy()
+                ws_name = str(vendor).replace(" ", "_")
+                save_to_history(df_vendor, worksheet_name=ws_name)
+            
+            st.sidebar.success("✅ Semua Data Berhasil Tersimpan!")
         else:
-            st.sidebar.warning("Data kosong.")
+            st.sidebar.error("❌ Gagal menarik data.")
 
 st.sidebar.divider()
 render_uploader_sidebar()
@@ -155,5 +218,4 @@ with tab2:
         w_plot = c2.selectbox("Berat", sorted(df_hist['weight_g'].unique()))
         plot_df = df_hist[(df_hist['vendor'] == v_plot) & (df_hist['weight_g'] == w_plot)]
         if not plot_df.empty:
-            # px sekarang sudah di-import di atas
-            st.plotly_chart(px.line(plot_df, x="timestamp", y="sell_idr", markers=True, title=f"Tren Harga {v_plot}"), width='stretch')
+            st.plotly_chart(px.line(plot_df, x="timestamp", y="sell_idr", markers=True, title=f"Tren Harga {v_plot} {w_plot}g"), width='stretch')
