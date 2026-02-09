@@ -18,6 +18,7 @@ URL_HAKABEGOLD = (
 def _clean_rp(x) -> int:
     if pd.isna(x):
         return 0
+    # Menghapus semua karakter non-digit kecuali jika ada angka
     s = re.sub(r"[^\d]", "", str(x))
     return int(s) if s else 0
 
@@ -25,7 +26,7 @@ def _clean_rp(x) -> int:
 # MAIN PARSER
 # =====================================================
 def parse_hakabegold() -> Tuple[pd.DataFrame, str]:
-    # Menambahkan cache buster
+    # Menambahkan cache buster untuk data realtime
     current_url = f"{URL_HAKABEGOLD}&cb={int(time.time())}"
     
     try:
@@ -33,47 +34,69 @@ def parse_hakabegold() -> Tuple[pd.DataFrame, str]:
         raw = pd.read_csv(current_url, header=None)
 
         # -------------------------------------------------
-        # 2. LOGIKA MENCARI TANGGAL (UPDATE BARU)
+        # 2. LOGIKA MENCARI TANGGAL UPDATE
         # -------------------------------------------------
-        # Kita cari di kolom pertama (indeks 0) baris yang mengandung nama hari atau tahun
-        date_keywords = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', '2026']
-        date_row = raw[0].astype(str).str.contains('|'.join(date_keywords), na=False)
+        date_keywords = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', '2025', '2026']
+        date_row_mask = raw[0].astype(str).str.contains('|'.join(date_keywords), na=False, case=False)
         
-        if date_row.any():
-            # Ambil teks tanggal pertama yang ditemukan
-            extracted_date = raw[0][date_row].iloc[0].strip()
+        if date_row_mask.any():
+            extracted_date = raw[0][date_row_mask].iloc[0].strip()
         else:
             extracted_date = f"Live: {time.strftime('%H:%M:%S')}"
 
         # -------------------------------------------------
-        # 3. Ambil data BERAT (Hanya baris numerik)
+        # 3. LOGIKA MENCARI HARGA BUYBACK PER GRAM (GLOBAL)
         # -------------------------------------------------
+        # Mencari baris yang mengandung teks "Buyback Emas Batangan"
+        bb_mask = raw.astype(str).apply(lambda x: x.str.contains('Buyback Emas Batangan', case=False, na=False)).any(axis=1)
+        global_buyback_rate = 0
+        
+        if bb_mask.any():
+            # Mengambil baris tersebut dan mencari nilai numerik di kolom-kolomnya
+            bb_row = raw[bb_mask].iloc[0]
+            for val in bb_row:
+                cleaned = _clean_rp(val)
+                # Harga emas per gram biasanya di kisaran jutaan (e.g., > 2.000.000)
+                if cleaned > 1000000:
+                    global_buyback_rate = cleaned
+                    break
+        
+        # -------------------------------------------------
+        # 4. AMBIL DATA BERAT & HARGA JUAL
+        # -------------------------------------------------
+        # Ambil baris yang kolom pertamanya numerik (berat emas)
         data = raw[pd.to_numeric(raw[0], errors="coerce").notna()].copy()
         
         if data.empty:
             return pd.DataFrame(), f"Data berat tidak ditemukan ({extracted_date})"
 
-        # 4. Mapping data
-        df = pd.DataFrame({
-            "vendor": "HK Logam Mulia",
-            "weight_g": data[0].astype(float),
-            "sell_idr": data[1].apply(_clean_rp),
-            "buyback_idr": data[2].apply(_clean_rp),
-            "stock": "Ready"
-        })
+        # Buat DataFrame baru
+        df = pd.DataFrame()
+        df["vendor"] = "HK Logam Mulia"
+        df["weight_g"] = data[0].astype(float)
+        
+        # Harga Jual diambil dari kolom indeks 1 (Total Harga Jual)
+        df["sell_idr"] = data[1].apply(_clean_rp)
+        
+        # Harga Buyback dihitung: Berat x Harga Buyback per gram
+        if global_buyback_rate > 0:
+            df["buyback_idr"] = (df["weight_g"] * global_buyback_rate).astype(int)
+        else:
+            # Fallback jika rate tidak ditemukan (menggunakan kolom 2 x berat)
+            df["buyback_idr"] = (df["weight_g"] * data[2].apply(_clean_rp)).astype(int)
+
+        df["stock"] = "Ready"
 
         # 5. DEDUP & SORT
         df = (
             df.sort_values("sell_idr", ascending=True)
               .drop_duplicates(subset="weight_g", keep="first")
         )
+        # Filter hanya data yang valid
         df = df[(df["weight_g"] > 0) & (df["sell_idr"] > 0)]
         df = df.sort_values("weight_g").reset_index(drop=True)
 
-        # Masukkan tanggal yang ditemukan ke dalam label
-        label = f"HK Logam Mulia ({extracted_date})"
-
-        return df, label
+        return df, extracted_date
 
     except Exception as e:
-        return pd.DataFrame(), f"Error Hakabe: {str(e)}"
+        return pd.DataFrame(), f"Error HK: {str(e)}"
