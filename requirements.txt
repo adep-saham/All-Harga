@@ -8,3 +8,4 @@ google-auth
 st-gsheets-connection
 plotly
 openpyxl==3.1.5
+bcrypt==4.2.0
