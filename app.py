@@ -24,15 +24,18 @@ from utils.history_manager import get_full_history, save_to_history
 st.set_page_config(page_title="Monitor Harga Emas", layout="wide")
 
 def format_rp(x):
-    try: return f"Rp{int(x):,}".replace(",", ".")
-    except: return "Rp0"
+    try:
+        return f"Rp{int(x):,}".replace(",", ".")
+    except:
+        return "Rp0"
 
 @st.cache_data(ttl=300)
 def fetch_html(url: str) -> str:
     try:
         r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
         return r.text or ""
-    except: return ""
+    except:
+        return ""
 
 def get_all_comparison_100g():
     """Mengumpulkan data 100g dari semua sumber + Waktu Update Web."""
@@ -48,43 +51,122 @@ def get_all_comparison_100g():
     ]
     for name, func in scrapers:
         try:
-            df_tmp, update_label = func() # Menangkap label waktu dari scraper
+            df_tmp, update_label = func()  # Menangkap label waktu dari scraper
             if df_tmp is not None and not df_tmp.empty:
                 if name in ["Galeri 24", "StarGold", "IndoGold"]:
                     mask = (df_tmp['vendor'].str.contains('ANTAM', case=False)) & (df_tmp['weight_g'] == 100)
                 else:
                     mask = (df_tmp['weight_g'] == 100)
-                
+
                 filtered = df_tmp[mask].copy()
                 if not filtered.empty:
                     row = filtered.sort_values("sell_idr").iloc[0]
                     results.append({
-                        "vendor": name, 
-                        "weight_g": 100, 
-                        "sell_idr": row['sell_idr'], 
+                        "vendor": name,
+                        "weight_g": 100,
+                        "sell_idr": row['sell_idr'],
                         "buyback_idr": row['buyback_idr'],
-                        "source_update": update_label # Simpan waktu update dari web
+                        "source_update": update_label
                     })
-        except: continue
+        except:
+            continue
     return pd.DataFrame(results)
+
+# =========================================================
+# AUTO-FETCH STATE & CALLBACKS
+# =========================================================
+def request_fetch():
+    st.session_state["need_fetch"] = True
+
+# init state (agar pertama kali buka langsung fetch)
+if "need_fetch" not in st.session_state:
+    st.session_state["need_fetch"] = True
 
 # =========================================================
 # UI SIDEBAR
 # =========================================================
 st.sidebar.title("⚙️ Kontrol")
-mode = st.sidebar.radio("Mode Tampilan", ["📊 Perbandingan 100g (All)", "🏪 Detail Per Toko"])
 
-if mode == "🏪 Detail Per Toko":
-    source_opt = st.sidebar.selectbox("Pilih Toko", ["Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold", "HK Logam Mulia", "Agung Jewellery"])
+mode = st.sidebar.radio(
+    "Mode Tampilan",
+    ["📊 Perbandingan 100g (All)", "🏪 Detail Per Toko"],
+    key="mode",
+    on_change=request_fetch
+)
+
+# pilihan toko hanya muncul kalau mode detail
+if st.session_state.get("mode") == "🏪 Detail Per Toko":
+    source_opt = st.sidebar.selectbox(
+        "Pilih Toko",
+        ["Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold", "HK Logam Mulia", "Agung Jewellery"],
+        key="source_opt",
+        on_change=request_fetch
+    )
     target_sheet = source_opt.replace(" ", "_")
 else:
+    # mode all
+    st.session_state["source_opt"] = "All 100g"
     source_opt = "All 100g"
     target_sheet = "Summary_100g"
 
-btn_fetch = st.sidebar.button("🚀 Tarik Data Sekarang", width='stretch', type="primary")
-
 st.sidebar.divider()
 render_uploader_sidebar()
+
+# =========================================================
+# FETCH LOGIC (DIPANGGIL OTOMATIS SAAT MODE/TOKO BERUBAH)
+# =========================================================
+def do_fetch_current():
+    # Clear cache hanya ketika user ganti mode/toko (bukan tiap rerun)
+    st.cache_data.clear()
+
+    current_mode = st.session_state.get("mode", "📊 Perbandingan 100g (All)")
+    current_source = st.session_state.get("source_opt", "All 100g")
+
+    if current_mode == "📊 Perbandingan 100g (All)":
+        st.session_state['current_df'] = get_all_comparison_100g()
+        return
+
+    # DETAIL PER TOKO
+    df_detail = pd.DataFrame()
+    ul = ""
+
+    # --- HK LOGAM MULIA ---
+    if current_source == "HK Logam Mulia":
+        df_detail, ul = parse_hakabegold()
+        if not df_detail.empty and (df_detail['vendor'].isna().all()):
+            df_detail['vendor'] = "HK Logam Mulia"
+
+    elif current_source == "StarGold":
+        df_detail, ul = parse_stargold("")
+    elif current_source == "Agung Jewellery":
+        df_detail, ul = parse_agungjewellery()
+    elif current_source == "HRTA":
+        df_detail, ul = parse_hrta("")
+    else:
+        url = {"Galeri24": URL_GALERI24, "AnekaLogam": URL_ANEKALOGAM, "IndoGold": URL_INDOGOLD}.get(current_source)
+        html = fetch_html(url) if url else ""
+        if current_source == "Galeri24":
+            df_detail, ul = parse_galeri24(html)
+        elif current_source == "AnekaLogam":
+            df_detail, ul = parse_anekalogam(html)
+        elif current_source == "IndoGold":
+            df_detail, ul = parse_indogold(html)
+
+    if df_detail is not None and not df_detail.empty:
+        df_detail['source_update'] = ul
+
+        # --- FILTER ATURAN: ANTAM HANYA 100G, LAINNYA ASLI ---
+        is_antam = df_detail['vendor'].str.contains('ANTAM', case=False, na=False)
+        df_detail = df_detail[~is_antam | (df_detail['weight_g'] == 100)].copy()
+
+        st.session_state['current_df'] = df_detail.reset_index(drop=True)
+    else:
+        st.session_state['current_df'] = pd.DataFrame()
+
+# Trigger fetch kalau diminta
+if st.session_state.get("need_fetch"):
+    st.session_state["need_fetch"] = False
+    do_fetch_current()
 
 # =========================================================
 # MAIN CONTENT
@@ -93,51 +175,14 @@ st.title("📊 Monitoring Harga Emas")
 tab1, tab2 = st.tabs(["🕒 Harga Realtime", "📈 Grafik Histori"])
 
 with tab1:
-    if btn_fetch:
-        st.cache_data.clear()
-        if mode == "📊 Perbandingan 100g (All)":
-            st.session_state['current_df'] = get_all_comparison_100g()
-        else:
-            df_detail = pd.DataFrame()
-            
-            # --- BAGIAN PERBAIKAN HK LOGAM MULIA ---
-            if source_opt == "HK Logam Mulia": 
-                df_detail, ul = parse_hakabegold()
-                # Pastikan vendor tidak nan jika scraper tidak memberikan nama
-                if not df_detail.empty and (df_detail['vendor'].isna().all()):
-                    df_detail['vendor'] = "HK Logam Mulia"
-            # ---------------------------------------
-            
-            elif source_opt == "StarGold": df_detail, ul = parse_stargold("")
-            elif source_opt == "Agung Jewellery": df_detail, ul = parse_agungjewellery()
-            elif source_opt == "HRTA": df_detail, ul = parse_hrta("")
-            else:
-                url = {"Galeri24": URL_GALERI24, "AnekaLogam": URL_ANEKALOGAM, "IndoGold": URL_INDOGOLD}.get(source_opt)
-                html = fetch_html(url)
-                if source_opt == "Galeri24": df_detail, ul = parse_galeri24(html)
-                elif source_opt == "AnekaLogam": df_detail, ul = parse_anekalogam(html)
-                elif source_opt == "IndoGold": df_detail, ul = parse_indogold(html)
-            
-            if not df_detail.empty:
-                df_detail['source_update'] = ul
-                
-                # --- FILTER ATURAN: ANTAM HANYA 100G, LAINNYA ASLI ---
-                # Cari baris yang mengandung nama ANTAM
-                is_antam = df_detail['vendor'].str.contains('ANTAM', case=False, na=False)
-                # Terapkan filter: Jika bukan Antam (Lolos) ATAU Jika Antam & Berat 100g (Lolos)
-                df_detail = df_detail[~is_antam | (df_detail['weight_g'] == 100)].copy()
-                
-                # Reset index agar tampilan No/Urutan di tabel rapi
-                st.session_state['current_df'] = df_detail.reset_index(drop=True)
-
     if 'current_df' in st.session_state and not st.session_state['current_df'].empty:
         df_active = st.session_state['current_df']
-        
+
         if st.button(f"💾 Simpan ke Google Sheet: {target_sheet}", width='stretch'):
             if save_to_history(df_active, worksheet_name=target_sheet):
                 st.success(f"✅ Data berhasil dicatat di tab '{target_sheet}'")
 
-        if mode == "📊 Perbandingan 100g (All)":
+        if st.session_state.get("mode") == "📊 Perbandingan 100g (All)":
             st.subheader("📋 Tabel Perbandingan Antam 100 gr")
             df_table = df_active.sort_values("sell_idr").reset_index(drop=True)
             display_data = pd.DataFrame({
@@ -157,47 +202,44 @@ with tab1:
                     "Harga Jual": sub["sell_idr"].apply(format_rp),
                     "Harga Beli": sub["buyback_idr"].apply(format_rp)
                 }))
+    else:
+        st.info("Tidak ada data untuk ditampilkan. Silakan pilih mode/toko di sidebar (data akan otomatis ditarik).")
 
 with tab2:
     st.subheader("📈 Grafik Histori")
-    sheet_to_view = st.selectbox("Pilih Sumber Data Grafik", ["Summary_100g", "Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold", "HK_Logam_Mulia", "Agung_Jewellery"])
-    
-    # Mengambil data histori
+    sheet_to_view = st.selectbox(
+        "Pilih Sumber Data Grafik",
+        ["Summary_100g", "Galeri24", "StarGold", "AnekaLogam", "HRTA", "IndoGold", "HK_Logam_Mulia", "Agung_Jewellery"]
+    )
+
     df_hist = get_full_history(worksheet_name=sheet_to_view)
-    
+
     if not df_hist.empty:
-        # --- PERBAIKAN 1: Pastikan timestamp dikenali sebagai format waktu ---
         df_hist['timestamp'] = pd.to_datetime(df_hist['timestamp'])
-        
+
         c1, c2 = st.columns(2)
         v_list = sorted(df_hist['vendor'].unique())
         v_plot = c1.selectbox("Pilih Vendor", v_list)
-        
-        # --- PERBAIKAN 2: Filter berat hanya yang tersedia untuk vendor tersebut ---
+
         available_weights = sorted(df_hist[df_hist['vendor'] == v_plot]['weight_g'].unique())
         w_plot = c2.selectbox("Pilih Berat (gram)", available_weights, key="w_plot")
-        
-        # --- PERBAIKAN 3: Filter dan WAJIB URUTKAN berdasarkan waktu (timestamp) ---
+
         plot_df = df_hist[(df_hist['vendor'] == v_plot) & (df_hist['weight_g'] == w_plot)].sort_values("timestamp")
-        
+
         if not plot_df.empty:
-            # Membuat grafik
             fig = px.line(
-                plot_df, 
-                x="timestamp", 
-                y="sell_idr", 
-                markers=True, 
+                plot_df,
+                x="timestamp",
+                y="sell_idr",
+                markers=True,
                 title=f"Tren Harga Jual {v_plot} {w_plot}g",
                 labels={"timestamp": "Tanggal & Waktu", "sell_idr": "Harga Jual (Rp)"}
             )
-            
-            # --- PERBAIKAN 4: Rapikan format angka pada sumbu Y ---
             fig.update_layout(yaxis_tickformat=',.0f')
-            
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info(f"Tidak ada data untuk {v_plot} dengan berat {w_plot}g.")
-            
+
         with st.expander("📂 Lihat Data Mentah"):
             st.dataframe(df_hist.sort_values("timestamp", ascending=False), use_container_width=True, hide_index=True)
     else:
