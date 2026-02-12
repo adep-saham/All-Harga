@@ -85,7 +85,12 @@ def get_all_comparison_100g():
             if filtered.empty:
                 continue
 
-            row = filtered.sort_values("sell_idr").iloc[0]
+            # khusus sumber yang harus ambil ANTAM 100g, pilih harga TERBESAR (biar tidak ketarik produk non-ANTAM)
+            if name in ["Galeri 24", "StarGold", "IndoGold"]:
+                row = filtered.sort_values("sell_idr", ascending=False).iloc[0]
+            else:
+                row = filtered.sort_values("sell_idr").iloc[0]
+
             results.append(
                 {
                     "vendor": name,
