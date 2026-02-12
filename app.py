@@ -232,12 +232,11 @@ def do_fetch_current():
     current_mode = st.session_state.get("mode", "📊 Perbandingan 100g (All)")
     current_source = st.session_state.get("source_opt", "All 100g")
 
-    # MODE: PERBANDINGAN 100g
     if current_mode == "📊 Perbandingan 100g (All)":
         st.session_state["current_df"] = get_all_comparison_100g()
         return
 
-    # MODE: DETAIL PER TOKO (HARUS TAMPIL SEMUA GRAMASI)
+    # DETAIL PER TOKO
     df_detail = pd.DataFrame()
     ul = ""
 
@@ -279,19 +278,25 @@ def do_fetch_current():
     if df_detail is not None and not df_detail.empty:
         df_detail["source_update"] = ul
 
-        # ✅ PENTING:
-        # Jangan filter "ANTAM hanya 100g" di mode detail.
-        # Filter 100g khusus perbandingan harus dilakukan di get_all_comparison_100g().
+        # ✅ DETAIL PER TOKO: tampilkan semua gramasi
+        # ✅ tapi untuk beberapa sumber (contoh Galeri24) sering ada duplikat gramasi (varian).
+        # Ambil 1 baris per (vendor, weight_g) dengan sell_idr terbesar.
+        if current_source in ["Galeri24"] and {"vendor", "weight_g", "sell_idr"}.issubset(df_detail.columns):
+            df_detail = (
+                df_detail.sort_values(["vendor", "weight_g", "sell_idr"], ascending=[True, True, False])
+                        .drop_duplicates(subset=["vendor", "weight_g"], keep="first")
+                        .reset_index(drop=True)
+            )
 
         st.session_state["current_df"] = df_detail.reset_index(drop=True)
     else:
         st.session_state["current_df"] = pd.DataFrame()
 
 
-# trigger fetch jika perlu
 if st.session_state.get("need_fetch"):
     st.session_state["need_fetch"] = False
     do_fetch_current()
+
 
 
 
