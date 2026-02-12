@@ -232,11 +232,12 @@ def do_fetch_current():
     current_mode = st.session_state.get("mode", "📊 Perbandingan 100g (All)")
     current_source = st.session_state.get("source_opt", "All 100g")
 
+    # MODE: PERBANDINGAN 100g
     if current_mode == "📊 Perbandingan 100g (All)":
         st.session_state["current_df"] = get_all_comparison_100g()
         return
 
-    # DETAIL PER TOKO
+    # MODE: DETAIL PER TOKO (HARUS TAMPIL SEMUA GRAMASI)
     df_detail = pd.DataFrame()
     ul = ""
 
@@ -252,13 +253,22 @@ def do_fetch_current():
 
     elif current_source == "StarGold":
         df_detail, ul = parse_stargold("")
+
     elif current_source == "Agung Jewellery":
         df_detail, ul = parse_agungjewellery()
+
     elif current_source == "HRTA":
         df_detail, ul = parse_hrta("")
+
     else:
-        url = {"Galeri24": URL_GALERI24, "AnekaLogam": URL_ANEKALOGAM, "IndoGold": URL_INDOGOLD}.get(current_source)
+        url = {
+            "Galeri24": URL_GALERI24,
+            "AnekaLogam": URL_ANEKALOGAM,
+            "IndoGold": URL_INDOGOLD,
+        }.get(current_source)
+
         html = fetch_html(url) if url else ""
+
         if current_source == "Galeri24":
             df_detail, ul = parse_galeri24(html)
         elif current_source == "AnekaLogam":
@@ -269,19 +279,20 @@ def do_fetch_current():
     if df_detail is not None and not df_detail.empty:
         df_detail["source_update"] = ul
 
-        # FILTER ATURAN: ANTAM HANYA 100G, LAINNYA ASLI
-        if "vendor" in df_detail.columns and "weight_g" in df_detail.columns:
-            is_antam = df_detail["vendor"].str.contains("ANTAM", case=False, na=False)
-            df_detail = df_detail[~is_antam | (df_detail["weight_g"] == 100)].copy()
+        # ✅ PENTING:
+        # Jangan filter "ANTAM hanya 100g" di mode detail.
+        # Filter 100g khusus perbandingan harus dilakukan di get_all_comparison_100g().
 
         st.session_state["current_df"] = df_detail.reset_index(drop=True)
     else:
         st.session_state["current_df"] = pd.DataFrame()
 
 
+# trigger fetch jika perlu
 if st.session_state.get("need_fetch"):
     st.session_state["need_fetch"] = False
     do_fetch_current()
+
 
 
 # =========================================================
