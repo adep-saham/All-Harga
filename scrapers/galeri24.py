@@ -162,6 +162,9 @@ def parse_galeri24(html: str) -> tuple[pd.DataFrame, str]:
                 "buyback_idr": buy,
                 "source_url": URL_GALERI24,
             })
+    # DEBUG sementara
+    print("HEADINGS:", [t for _, t in headings][:10])
+    print("TABLE COUNT:", len(soup.find_all("table")))
 
     if not rows:
         raise RuntimeError("Galeri24: tabel ditemukan tapi tidak ada data berat+harga yang berhasil diparse.")
