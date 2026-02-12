@@ -55,84 +55,99 @@ def normalize_vendor(raw_vendor: str) -> str:
     return v
 
 
-def parse_galeri24(html: str) -> Tuple[pd.DataFrame, str]:
-    """
-    Parse halaman https://galeri24.co.id/harga-emas.
-
-    IMPORTANT:
-    Halaman ini memuat beberapa tabel vendor sekaligus (minimal: ANTAM dan GALERI 24).
-    Output df akan berisi semua vendor. Saat dipakai untuk 'Antam 100gr',
-    WAJIB filter vendor == 'ANTAM' dan weight_g == 100.
-    """
+def parse_galeri24(html: str) -> tuple[pd.DataFrame, str]:
     soup = BeautifulSoup(html, "html.parser")
-    text = normalize_spaces(soup.get_text(" ", strip=True))
-    update_label = parse_update_label(text)
 
-    # Ambil tiap blok tabel:
-    # "Harga ANTAM ... Berat Harga Jual Harga Buyback ... (rows) ... Harga GALERI 24 ..."
-    block_pattern = re.compile(
-        r"Harga\s+(?P<vendor>.+?)\s+Berat\s+Harga\s+Jual\s+Harga\s+Buyback\s+(?P<body>.+?)"
-        r"(?=(?:\s+Harga\s+.+?\s+Berat\s+Harga\s+Jual\s+Harga\s+Buyback)|(?:\s+Diperbarui)|\Z)",
-        re.IGNORECASE,
-    )
-    blocks = list(block_pattern.finditer(text))
-    if not blocks:
-        raise RuntimeError("Galeri24: tidak menemukan blok vendor (struktur halaman berubah).")
+    # update label (tetap)
+    full_text = normalize_spaces(soup.get_text(" ", strip=True))
+    update_label = parse_update_label(full_text)
 
-    # Tiap baris: "<w> Rp <sell> Rp <buyback>"
-    pair_pattern = re.compile(
-        r"(?P<w>\d+(?:\.\d+)?)\s+Rp\s*(?P<sell>[\d\.,]+)\s+Rp\s*(?P<buy>[\d\.,]+)",
-        re.IGNORECASE,
-    )
-
-    snapshot_ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     rows = []
-    vendor_order = []
+    snapshot_ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-    for b in blocks:
-        raw_vendor = b.group("vendor")
-        vendor = normalize_vendor(raw_vendor)
-        if vendor not in vendor_order:
-            vendor_order.append(vendor)
+    # Cari semua heading yang bertuliskan "Harga <VENDOR>"
+    headings = []
+    for tag in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
+        t = normalize_spaces(tag.get_text(" ", strip=True))
+        if t.upper().startswith("HARGA "):
+            headings.append((tag, t))
 
-        body = b.group("body")
-        for p in pair_pattern.finditer(body):
-            w = float(p.group("w"))
-            # Batasi nilai w yang masuk akal
+    if not headings:
+        raise RuntimeError("Galeri24: heading 'Harga <vendor>' tidak ditemukan (struktur berubah).")
+
+    def extract_vendor(heading_text: str) -> str:
+        # "Harga GALERI 24" -> "GALERI 24"
+        v = heading_text.strip()[len("Harga "):].strip()
+        v = normalize_spaces(v).upper()
+        return v
+
+    # Untuk tiap heading, ambil tabel terdekat setelahnya
+    for tag, heading_text in headings:
+        vendor = extract_vendor(heading_text)
+
+        # cari table berikutnya setelah heading ini
+        table = tag.find_next("table")
+        if table is None:
+            continue
+
+        # ambil semua row tabel
+        for tr in table.find_all("tr"):
+            tds = tr.find_all(["td", "th"])
+            if len(tds) < 3:
+                continue
+
+            w_raw = normalize_spaces(tds[0].get_text(" ", strip=True))
+            sell_raw = normalize_spaces(tds[1].get_text(" ", strip=True))
+            buy_raw = normalize_spaces(tds[2].get_text(" ", strip=True))
+
+            # skip header
+            if w_raw.lower() in ["berat", "weight"]:
+                continue
+
+            # berat bisa "0.5" atau "0.5 gr"
+            m = re.search(r"(\d+(?:\.\d+)?)", w_raw)
+            if not m:
+                continue
+            w = float(m.group(1))
             if not (0.1 <= w <= 1000):
                 continue
 
-            rows.append(
-                {
-                    "snapshot_ts": snapshot_ts,
-                    "update_label": update_label,
-                    "source_site": "galeri24",
-                    "vendor": vendor,  # hasil normalisasi: 'ANTAM' / 'GALERI 24'
-                    "weight_g": w,
-                    "sell_idr": rupiah_to_int("Rp" + p.group("sell")),
-                    "buyback_idr": rupiah_to_int("Rp" + p.group("buy")),
-                    "source_url": URL_GALERI24,
-                }
-            )
+            sell = rupiah_to_int(sell_raw)
+            buy = rupiah_to_int(buy_raw)
+
+            # skip baris kosong
+            if sell == 0 and buy == 0:
+                continue
+
+            rows.append({
+                "snapshot_ts": snapshot_ts,
+                "update_label": update_label,
+                "source_site": "galeri24",
+                "vendor": vendor,          # ini yang dipakai untuk grouping di Streamlit
+                "weight_g": w,
+                "sell_idr": sell,
+                "buyback_idr": buy,
+                "source_url": URL_GALERI24,
+            })
 
     if not rows:
-        raise RuntimeError("Galeri24: tidak menemukan pasangan berat+harga (regex gagal / struktur berubah).")
+        raise RuntimeError("Galeri24: tabel ditemukan tapi tidak ada data berat+harga yang berhasil diparse.")
 
     df = pd.DataFrame(rows)
 
-    # Dedup agar aman jika teks halaman punya pengulangan
-    df = df.drop_duplicates(
-        subset=["update_label", "vendor", "weight_g", "sell_idr", "buyback_idr"]
-    )
+    # dedup aman (kalau HTML punya duplikasi row)
+    df = df.drop_duplicates(subset=["update_label", "vendor", "weight_g", "sell_idr", "buyback_idr"])
 
-    # Sorting vendor & berat
+    # sorting vendor (berdasarkan kemunculan heading di halaman)
+    vendor_order = [extract_vendor(h[1]) for h in headings]
     vendor_rank = {v: i for i, v in enumerate(vendor_order)}
     df["__vr"] = df["vendor"].map(lambda x: vendor_rank.get(x, 9999))
     df["__w0"] = df["weight_g"].map(lambda x: weight_sort_key(float(x))[0])
     df["__w1"] = df["weight_g"].map(lambda x: weight_sort_key(float(x))[1])
-    df = df.sort_values(["__vr", "vendor", "__w0", "__w1"]).drop(columns=["__vr", "__w0", "__w1"])
+    df = df.sort_values(["__vr", "vendor", "__w0", "__w1"]).drop(columns=["__vr", "__w0", "__w1"]).reset_index(drop=True)
 
     return df, update_label
+
 
 
 def pick_price_row(df: pd.DataFrame, vendor: str, weight_g: float) -> Optional[Dict]:
