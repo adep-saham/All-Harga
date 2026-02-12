@@ -122,9 +122,81 @@ ALL_SHEETS = [
 
 
 def build_excel_all_sheets() -> bytes:
-    """Tarik seluruh history dari Google Sheet -> jadikan 1 file Excel multi-sheet."""
+    """Tarik seluruh history dari Google Sheet -> jadikan 1 file Excel multi-sheet.
+    FIX: append snapshot TERBARU (hari ini) ke masing-masing sheet sebelum export,
+         jadi export tidak tergantung apakah 'Simpan ke Google Sheet' sudah jalan atau gagal rate limit.
+    """
+    from io import BytesIO
+    import datetime as dt
+    import pandas as pd
+
     output = BytesIO()
     now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # --- helper: fetch snapshot terbaru per sheet ---
+    def fetch_latest_snapshot_for_sheet(sheet_name: str) -> pd.DataFrame:
+        """
+        Menghasilkan DF snapshot terbaru untuk 1 toko/sheet.
+        Harus match kolom history: timestamp, vendor, weight_g, sell_idr, buyback_idr, source_update
+        """
+        ul = ""
+        df = pd.DataFrame()
+
+        if sheet_name == "HK_Logam":
+            df, ul = parse_hakabegold()
+            if (
+                df is not None
+                and not df.empty
+                and ("vendor" in df.columns)
+                and df["vendor"].isna().all()
+            ):
+                df["vendor"] = "HK Logam Mulia"
+
+        elif sheet_name == "StarGold":
+            df, ul = parse_stargold("")
+
+        elif sheet_name == "Agung_Jewellery":
+            df, ul = parse_agungjewellery()
+
+        elif sheet_name == "HRTA":
+            df, ul = parse_hrta("")
+
+        elif sheet_name == "Galeri24":
+            html = fetch_html(URL_GALERI24)
+            df, ul = parse_galeri24(html)
+
+        elif sheet_name == "AnekaLogam":
+            html = fetch_html(URL_ANEKALOGAM)
+            df, ul = parse_anekalogam(html)
+
+        elif sheet_name == "IndoGold":
+            html = fetch_html(URL_INDOGOLD)
+            df, ul = parse_indogold(html)
+
+        # kalau gagal fetch, return kosong
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["timestamp", "vendor", "weight_g", "sell_idr", "buyback_idr", "source_update"])
+
+        df = df.copy()
+
+        # normalisasi nama kolom timestamp (history pakai "timestamp")
+        if "snapshot_ts" in df.columns and "timestamp" not in df.columns:
+            df = df.rename(columns={"snapshot_ts": "timestamp"})
+        if "timestamp" not in df.columns:
+            df["timestamp"] = now  # fallback
+
+        # source update
+        if "source_update" not in df.columns:
+            df["source_update"] = ul
+        else:
+            df["source_update"] = df["source_update"].fillna(ul)
+
+        # pastikan kolom standar ada
+        for c in ["vendor", "weight_g", "sell_idr", "buyback_idr"]:
+            if c not in df.columns:
+                df[c] = None
+
+        return df[["timestamp", "vendor", "weight_g", "sell_idr", "buyback_idr", "source_update"]].copy()
 
     # butuh openpyxl di requirements.txt
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -132,19 +204,36 @@ def build_excel_all_sheets() -> bytes:
         info.to_excel(writer, sheet_name="_INFO", index=False)
 
         for sheet in ALL_SHEETS:
-            df = get_full_history(worksheet_name=sheet)
+            # 1) history dari GSheet (lama)
+            df_hist = get_full_history(worksheet_name=sheet)
 
-            if df is None or df.empty:
-                pd.DataFrame(columns=["timestamp", "vendor", "weight_g", "sell_idr", "buyback_idr", "source_update"]).to_excel(
-                    writer, sheet_name=sheet[:31], index=False
-                )
-                continue
+            # 2) snapshot terbaru (hari ini)
+            df_latest = fetch_latest_snapshot_for_sheet(sheet)
 
+            # 3) gabungkan
+            if df_hist is None or df_hist.empty:
+                df = df_latest
+            else:
+                df = df_hist.copy()
+                df = pd.concat([df, df_latest], ignore_index=True)
+
+            # 4) rapikan timestamp & sort
             if "timestamp" in df.columns:
                 df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
                 df = df.sort_values("timestamp")
 
-            df.to_excel(writer, sheet_name=sheet[:31], index=False)
+            # 5) dedup biar gak dobel jika snapshot sudah pernah tersimpan
+            key_cols = [c for c in ["timestamp", "vendor", "weight_g", "sell_idr", "buyback_idr", "source_update"] if c in df.columns]
+            if key_cols:
+                df = df.drop_duplicates(subset=key_cols, keep="last")
+
+            # 6) tulis
+            if df is None or df.empty:
+                pd.DataFrame(columns=["timestamp", "vendor", "weight_g", "sell_idr", "buyback_idr", "source_update"]).to_excel(
+                    writer, sheet_name=sheet[:31], index=False
+                )
+            else:
+                df.to_excel(writer, sheet_name=sheet[:31], index=False)
 
     output.seek(0)
     return output.getvalue()
